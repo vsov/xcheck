@@ -1,0 +1,1838 @@
+#!/usr/bin/env python3
+"""xcheck orchestrator — drives the audit cycle between its human gates.
+
+Usage:
+  xcheck [--project DIR] [--dry-run] next          run ONE session (whoever's turn it is)
+  xcheck [--project DIR] [--dry-run] loop [--step] [--max-sessions N]
+                                                   run sessions until a human gate
+  xcheck [--project DIR] [--budget SECONDS] loop   (loop also takes a wall-clock cap)
+  xcheck [--project DIR] status                    read-only: state + decision preview
+  xcheck [--project DIR] lint                      read-only: ledger<->finding-file consistency
+  xcheck [--project DIR] metrics                   read-only: spec §11 metrics
+  xcheck [--project DIR] unlock [--force]          remove a stale lock
+  xcheck selftest                                  run the built-in decision-logic tests
+
+The orchestrator is a courier, not a brain: all methodology lives in the
+project's audit/XCHECK.md. This tool only reads audit/LEDGER.md and
+audit/AUDIT.md, decides whose turn it is, launches the corresponding agent
+CLI headlessly, and stops at every gate the methodology gives the human:
+triage needed, ⚠ needs-human, empty queue (done), or a session error.
+
+Config: audit/orchestrator.conf (KEY=VALUE), created with defaults on first
+run. {prompt} in a *_cmd value is replaced with the role prompt; a command
+without {prompt} gets the prompt appended as its final argument.
+
+Lock: audit/.lock (JSON: pid, role, started, host). Created for every
+writing session, removed on exit (including Ctrl-C). A live foreign lock
+aborts the run; a dead one must be cleared with `xcheck unlock`.
+
+Source of truth (XCHECK.md §2/§9.4): the finding file is the truth for
+non-triage statuses; LEDGER.md is a derived index. The orchestrator
+reconciles the two before deciding — a non-triage ledger<->file mismatch
+takes the frontmatter status, while a pending-triage decision (file
+'reported', ledger accepted/rejected/deferred) keeps the ledger value and
+flows to the file on next contact (§2 rule 3). `lint` reports any drift.
+"""
+
+import json
+import os
+import re
+import shlex
+import socket
+import subprocess
+import sys
+import tempfile
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+
+# ---------------------------------------------------------------- defaults
+
+DEFAULT_CONF = """\
+# xcheck orchestrator config (KEY=VALUE, # comments). {prompt} = role prompt.
+# session_note: appended to every role prompt (project-specific cautions).
+session_note=
+planner_cmd=codex exec --sandbox workspace-write {prompt}
+auditor_cmd=codex exec --sandbox workspace-write {prompt}
+verifier_cmd=codex exec --sandbox workspace-write {prompt}
+remediator_cmd=claude -p --dangerously-skip-permissions {prompt}
+batch_size=8
+max_sessions=20
+# triage_batch_cap: 0 = unbounded (audit until queue empties before triage);
+# N = stop for triage once N findings pile up in 'reported' (smaller sittings).
+triage_batch_cap=0
+# push_after_commit: empty/off = never push (default); on/true/1/yes = git push after each courier commit.
+push_after_commit=
+"""
+
+TRIAGE_STATUSES = {"accepted", "rejected", "deferred"}
+TERMINAL = {"closed", "rejected", "withdrawn", "obsolete", "superseded-by-class"}
+
+PROMPTS = {
+    "Planner": (
+        "Read audit/XCHECK.md. Role: Planner. Charter: inventory this project "
+        "and its norms; produce audit/AUDIT.md. Do not audit anything yet."
+    ),
+    "Auditor": (
+        "Read audit/XCHECK.md and audit/AUDIT.md. Role: Auditor. "
+        "Charter: pass {charter}. Stop conditions per charter."
+    ),
+    "Remediator": (
+        "Read audit/XCHECK.md and audit/AUDIT.md. Role: Remediator. "
+        "Charter: {charter} (see LEDGER). Follow the XCHECK.md §3 sequence "
+        "strictly; sync pending triage decisions on contact per §2 rule 3. "
+        "If the project uses git, COMMIT your changes before finishing, with "
+        "the finding ids in the message (XCHECK.md §9 rule 7) — stage only "
+        "the files you yourself changed, never pre-existing dirt."
+    ),
+    "Verifier": (
+        "Read audit/XCHECK.md and audit/AUDIT.md. Role: Verifier. "
+        "Charter: {charter}. You did not write these fixes; try to prove them "
+        "wrong. If your sandbox cannot commit, leave changes unstaged and say so."
+    ),
+}
+
+# ---------------------------------------------------------------- parsing
+
+
+LEDGER_ROW_RE = re.compile(
+    r"^\|\s*((?:F|CF)-\d{4})\s*\|(.*?)\|\s*(\w+)\s*\|\s*([\w-]+)\s*\|(.*?)\|"
+)
+LEDGER_HEADER_RE = re.compile(r"^\|\s*id\s*\|\s*title\s*\|", re.I)
+LEDGER_SEP_RE = re.compile(r"^\|[\s\-:|]+\|?\s*$")
+LIMIT_KEYS = ("max_findings_per_pass", "remediation_batch_size", "class_threshold", "reopen_limit")
+
+
+def parse_ledger(audit_dir: Path):
+    """LEDGER.md table rows -> list of dicts (id, title, severity, status, next)."""
+    rows = []
+    ledger = audit_dir / "LEDGER.md"
+    if not ledger.is_file():
+        return rows
+    for line in ledger.read_text(encoding="utf-8").splitlines():
+        m = LEDGER_ROW_RE.match(line)
+        if m:
+            rows.append(
+                {
+                    "id": m.group(1),
+                    "title": m.group(2).strip(),
+                    "severity": m.group(3),
+                    "status": m.group(4),
+                    "next": m.group(5).strip(),
+                }
+            )
+    return rows
+
+
+def ledger_malformed_rows(audit_dir: Path):
+    """Lines in LEDGER.md that should be table rows but do not parse (F-0004).
+
+    LEDGER.md is a pure table (header + separator + one row per finding). Any
+    non-blank line that is not the header, not a separator, and not a valid row
+    is malformed — the fail-open parser would otherwise drop it silently, and a
+    dropped active finding can produce a false 'done'. Returns the offending
+    lines (empty list when the ledger is clean or absent)."""
+    ledger = audit_dir / "LEDGER.md"
+    if not ledger.is_file():
+        return []
+    bad = []
+    for line in ledger.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        if LEDGER_HEADER_RE.match(line) or LEDGER_SEP_RE.match(line):
+            continue
+        if not LEDGER_ROW_RE.match(line):
+            bad.append(line.strip())
+    return bad
+
+
+def parse_limits(audit_dir: Path):
+    """Per-project limit overrides from AUDIT.md §5 (XCHECK.md §10 lets AUDIT.md
+    override any default). Returns {key: int} for recognised keys only."""
+    out = {}
+    audit_md = audit_dir / "AUDIT.md"
+    if not audit_md.is_file():
+        return out
+    for line in audit_md.read_text(encoding="utf-8").splitlines():
+        m = re.match(r"^\s*(?:[-*]\s*)?(\w+)\s*:\s*(\d+)\b", line)
+        if m and m.group(1) in LIMIT_KEYS:
+            out[m.group(1)] = int(m.group(2))
+    return out
+
+
+def effective_rows(audit_dir: Path):
+    """Ledger rows reconciled with finding-file frontmatter (XCHECK.md §9.4:
+    the finding file is truth for non-triage statuses). A pending-triage delta
+    (file 'reported', ledger accepted/rejected/deferred) keeps the ledger
+    status — it flows ledger->file per §2 rule 3. Any other mismatch adopts the
+    frontmatter status. Returns (rows, findings-frontmatter)."""
+    rows = parse_ledger(audit_dir)
+    fnd = load_findings(audit_dir)
+    seen = set()
+    for r in rows:
+        seen.add(r["id"])
+        fm = fnd.get(r["id"])
+        if not fm:
+            continue
+        fstatus = fm.get("status")
+        if not fstatus or fstatus == r["status"]:
+            continue
+        pending_triage = fstatus == "reported" and r["status"] in TRIAGE_STATUSES
+        if not pending_triage:
+            r["status"] = fstatus
+    # F-0005: a finding file present but ABSENT from the derived ledger is still
+    # canonical state (§2: the finding file is the single source of truth; the
+    # ledger is a derived index). Reconciling only existing ledger rows lets such
+    # a finding vanish from the decision and yields a false 'done'. Synthesize a
+    # row from its frontmatter so the decision sees the real state.
+    for fid, fm in sorted(fnd.items()):
+        if fid in seen:
+            continue
+        rows.append({
+            "id": fid,
+            "title": fm.get("title", ""),
+            "severity": fm.get("severity", "minor"),
+            "status": fm.get("status", ""),
+            "next": "",
+        })
+    return rows, fnd
+
+
+def parse_queue(audit_dir: Path):
+    """AUDIT.md pass queue -> (unchecked pass ids, checked pass ids)."""
+    unchecked, checked = [], []
+    audit_md = audit_dir / "AUDIT.md"
+    if not audit_md.is_file():
+        return unchecked, checked
+    for line in audit_md.read_text(encoding="utf-8").splitlines():
+        m = re.match(r"^\s*-\s*\[( |x)\]\s*(P-\d{2})\b", line)
+        if m:
+            (checked if m.group(1) == "x" else unchecked).append(m.group(2))
+    return unchecked, checked
+
+
+def _coverage_marker(text, label):
+    """True iff `label` (COVERED / NOT COVERED) appears as a coverage MARKER with
+    NON-EMPTY content. A marker is the label at the START of a line, allowing
+    markdown heading (`### `) or bold (`**`) decoration, closed by `:`, `**`, or
+    the line end. A bare mid-sentence mention ("...merely mentions COVERED and
+    NOT COVERED without reporting scope.") is NOT a marker (F-0011 adversarial
+    bypass). Anchor at line start so the COVERED inside NOT COVERED never
+    satisfies COVERED. F-0011 hardening: an EMPTY marker (`NOT COVERED:` with
+    nothing after it on the line and no non-blank line before the next marker /
+    heading / end) is a silent gap and does NOT qualify — §4 rule 5 demands the
+    pass state what it did not cover, not merely print the label."""
+    pat = re.compile(
+        rf"^[ \t]*(?:#{{1,6}}[ \t]+|\*\*[ \t]*)?{label}\b[ \t]*(?::|\*\*|$)(?P<rest>.*)$",
+        re.MULTILINE,
+    )
+    for m in pat.finditer(text):
+        # content on the marker line itself?
+        if m.group("rest").strip(" \t*:"):
+            return True
+        # else scan following lines until the next marker/heading/blank-run end
+        tail = text[m.end():].splitlines()
+        for line in tail:
+            s = line.strip()
+            if not s:
+                continue
+            # A markdown heading (`## ...`) is a NEW section boundary, not content
+            # of this marker — so an empty marker followed by a heading is empty.
+            if re.match(r"^#{1,6}\s", s):
+                break
+            # A following COVERED/NOT COVERED marker line is also a boundary, empty.
+            if re.match(r"^(?:\*\*\s*)?(?:NOT\s+)?COVERED\b", s, re.I):
+                break
+            # Anything else non-blank (list item, prose, quote) is real content.
+            return True
+    return False
+
+
+def passes_without_coverage(audit_dir: Path):
+    """Checked passes (AUDIT.md `[x]`) that lack a complete coverage report
+    (XCHECK.md §4 rule 5: a coverage report is mandatory; a silent gap is a
+    protocol violation). A checked pass is documented only when a matching
+    `passes/P-NN-*.md` exists AND its body carries both a COVERED and a
+    NOT COVERED marker. Returns the offending pass ids (empty when every
+    checked pass is documented). A single queue checkbox is NOT a substitute
+    for the report (F-0011)."""
+    _, checked = parse_queue(audit_dir)
+    pdir = audit_dir / "passes"
+    bad = []
+    for pid in checked:
+        files = sorted(pdir.glob(f"{pid}-*.md")) if pdir.is_dir() else []
+        if not files:
+            bad.append(pid)
+            continue
+        text = "\n".join(f.read_text(encoding="utf-8", errors="replace") for f in files)
+        # A report is complete only when BOTH lists are present AS MARKERS —
+        # `**COVERED:**` / `### COVERED` / `COVERED:` and the NOT COVERED forms.
+        # A bare prose mention of the words does not qualify (§4 rule 5 demands
+        # the pass state explicitly what it did not cover, not name the words).
+        has_not_covered = _coverage_marker(text, "NOT COVERED")
+        has_covered = _coverage_marker(text, "COVERED")
+        if not (has_covered and has_not_covered):
+            bad.append(pid)
+    return bad
+
+
+def load_conf(audit_dir: Path, write_default: bool = False):
+    conf_path = audit_dir / "orchestrator.conf"
+    if not conf_path.is_file():
+        if write_default:
+            conf_path.write_text(DEFAULT_CONF, encoding="utf-8")
+        text = DEFAULT_CONF
+    else:
+        text = conf_path.read_text(encoding="utf-8")
+    conf = {}
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        k, _, v = line.partition("=")
+        conf[k.strip()] = v.strip()
+    conf.setdefault("batch_size", "8")
+    conf.setdefault("max_sessions", "20")
+    conf.setdefault("session_note", "")
+    conf.setdefault("triage_batch_cap", "0")
+    conf.setdefault("push_after_commit", "")
+    return conf
+
+
+# ---------------------------------------------------------------- decision
+
+
+def decide(rows, unchecked_passes, audit_md_exists, batch_size=8, triage_cap=0):
+    """Return (kind, detail). kind: stop-* | run-* | done.
+
+    Priority: needs-human > verify > remediate > triage > audit > plan > done.
+    Closing started work precedes opening new work; triage blocks only when
+    nothing else is runnable, so pass batches can accumulate before a triage
+    sitting (the pilot's working rhythm) — unless triage_cap bounds the pile.
+    """
+    for r in rows:
+        if "needs-human" in r["next"]:
+            return "stop-needs-human", r["id"]
+
+    fixed = [r["id"] for r in rows if r["status"] == "fixed"]
+    if fixed:
+        return "run-verifier", fixed
+
+    reopened = [r["id"] for r in rows if r["status"] == "reopened"]
+    accepted_cf = [r["id"] for r in rows if r["status"] == "accepted" and r["id"].startswith("CF-")]
+    # Remediator-runnable work: accepted F-findings plus interrupted in-progress
+    # states. 'validated' and 'planned' are legal durable states owned by the
+    # Remediator (§5), not ledger corruption — a session interrupted after
+    # confirming/planning must be resumed, not flagged stop-inconsistent (F-0001).
+    remediable = [
+        r["id"] for r in rows
+        if r["status"] in ("validated", "planned")
+        or (r["status"] == "accepted" and r["id"].startswith("F-"))
+    ]
+    if reopened:
+        # F-0003: the remediation_batch_size cap (§10) bounds EVERY Remediator
+        # batch, not only the 'remediable' collection — reopened work is a
+        # Remediator session too and must respect the same session boundary.
+        return "run-remediator", reopened[:batch_size]
+    if accepted_cf:
+        return "run-remediator", [accepted_cf[0]]
+    if remediable:
+        return "run-remediator", remediable[:batch_size]
+
+    reported = [r["id"] for r in rows if r["status"] == "reported"]
+    # triage_cap (0 = unbounded): when the reported pile reaches the cap,
+    # stop for a triage sitting BEFORE opening more audit passes, so the
+    # human triages in digestible batches instead of one huge sitting.
+    if triage_cap and len(reported) >= triage_cap:
+        return "stop-triage", reported
+
+    if unchecked_passes:
+        return "run-auditor", unchecked_passes[0]
+
+    if reported:
+        return "stop-triage", reported
+
+    if not audit_md_exists:
+        return "run-planner", None
+
+    disputed = [r["id"] for r in rows if r["status"] == "disputed"]
+    if disputed:
+        return "stop-disputed", disputed
+    deferred = [r["id"] for r in rows if r["status"] == "deferred"]
+    non_terminal = [r["id"] for r in rows if r["status"] not in TERMINAL and r["status"] not in ("deferred", "disputed")]
+    if non_terminal:
+        return "stop-inconsistent", non_terminal
+    if deferred:
+        return "done-deferred-debt", deferred
+    return "done", None
+
+
+def role_and_charter(kind, detail):
+    if kind == "run-planner":
+        return "Planner", None
+    if kind == "run-auditor":
+        return "Auditor", detail
+    if kind == "run-remediator":
+        ids = detail
+        if len(ids) == 1:
+            return "Remediator", f"finding {ids[0]}"
+        return "Remediator", f"findings {ids[0]}..{ids[-1]} ({len(ids)} items: {', '.join(ids)})"
+    if kind == "run-verifier":
+        ids = detail
+        return "Verifier", f"every finding in status fixed ({', '.join(ids)})"
+    raise ValueError(kind)
+
+
+# ---------------------------------------------------------------- lock
+
+
+class Lock:
+    def __init__(self, audit_dir: Path, role: str):
+        self.path = audit_dir / ".lock"
+        self.role = role
+
+    def acquire(self):
+        payload = json.dumps(
+            {
+                "pid": os.getpid(),
+                "role": self.role,
+                "started": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                "host": socket.gethostname(),
+            }
+        )
+        try:
+            fd = os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except FileExistsError:
+            info = self.read()
+            alive = info and pid_alive(info.get("pid", -1))
+            state = "LIVE" if alive else "STALE (pid dead)"
+            raise SystemExit(
+                f"audit/.lock exists — {state}: {info}. "
+                f"{'Another writing session is active; wait for it.' if alive else 'Run `xcheck unlock` to clear it.'}"
+            )
+        with os.fdopen(fd, "w") as f:
+            f.write(payload)
+
+    def relabel(self, role: str):
+        """Rewrite the held lock's role label (pid/started/host preserved).
+        Used when cmd_next acquires the lock before the role is decided."""
+        info = self.read() or {}
+        info["role"] = role
+        try:
+            self.path.write_text(json.dumps(info), encoding="utf-8")
+        except OSError:
+            pass
+        self.role = role
+
+    def read(self):
+        try:
+            return json.loads(self.path.read_text(encoding="utf-8"))
+        except Exception:
+            return None
+
+    def release(self):
+        try:
+            self.path.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def pid_alive(pid):
+    # F-0010: os.kill(pid, 0) distinguishes three cases, and only ONE means
+    # dead. ProcessLookupError (ESRCH) => no such process. PermissionError
+    # (EPERM) => the process EXISTS but we may not signal it (foreign owner on a
+    # shared checkout) — that is alive, not stale; treating it as dead lets
+    # `unlock` clear a live foreign lock without --force (§4 rule 8). A bad
+    # pid value (ValueError/TypeError) is not provably alive, so: not alive.
+    try:
+        os.kill(int(pid), 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except (OSError, ValueError, TypeError):
+        return False
+    return True
+
+
+# ---------------------------------------------------------------- sessions
+
+
+def build_cmd(conf, role, prompt):
+    tmpl = conf.get(f"{role.lower()}_cmd")
+    if not tmpl:
+        raise SystemExit(f"orchestrator.conf lacks {role.lower()}_cmd")
+    parts = shlex.split(tmpl)
+    if "{prompt}" in parts:
+        return [prompt if p == "{prompt}" else p for p in parts]
+    return parts + [prompt]
+
+
+def run_session(project: Path, conf, role, charter, dry_run=False, lock=None):
+    """Run one agent session. If `lock` is given, the caller already holds the
+    writing lock and this call runs (subprocess + courier) inside it — the whole
+    next-transaction is serialized (F-0009). If `lock` is None (standalone call),
+    the session acquires and releases its own lock, with the courier commit still
+    inside the locked region: acquire -> subprocess -> courier -> release."""
+    prompt = PROMPTS[role].format(charter=charter) if charter else PROMPTS[role]
+    note = conf.get("session_note", "").strip()
+    if note:
+        prompt += f" Project note from the operator: {note}"
+    cmd = build_cmd(conf, role, prompt)
+    print(f"\n=== {role} session ===")
+    print(f"charter: {charter or '(role default)'}")
+    print(f"command: {' '.join(shlex.quote(c) for c in cmd[:4])} ... [+prompt]")
+    if dry_run:
+        print("dry-run: not executing.")
+        return 0
+
+    own_lock = lock is None
+    if own_lock:
+        lock = Lock(project / "audit", role)
+        lock.acquire()
+    try:
+        # F-0009: EVERY orchestrator write — including creating the log dir —
+        # must happen inside the critical section. In the standalone branch this
+        # dir was created before acquire(), so a write escaped the lock. Do it
+        # after acquire so the whole session (log dir, subprocess, courier) is
+        # serialized under one lock: acquire -> writes -> courier -> release.
+        logs = project / "audit" / "orchestrator-logs"
+        logs.mkdir(exist_ok=True)
+        ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+        log_path = logs / f"{ts}-{role.lower()}.log"
+        pre_dirty = dirty_paths(project)
+        t0 = time.time()
+        with open(log_path, "w", encoding="utf-8") as log:
+            proc = subprocess.run(cmd, cwd=project, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT)
+        rc = proc.returncode
+        mins = (time.time() - t0) / 60
+        print(f"exit={rc} after {mins:.1f} min; log: {log_path.relative_to(project)}")
+        tail = log_path.read_text(encoding="utf-8", errors="replace").splitlines()[-8:]
+        for line in tail:
+            print(f"  | {line}")
+        committed = courier_commit(project, role, charter, pre_dirty, conf)
+    finally:
+        if own_lock:
+            lock.release()
+    if not committed:
+        # courier could not durably commit; do not let next/loop advance to a
+        # role (e.g. Verifier) that needs the diff (F-0008).
+        return rc if rc != 0 else 1
+    return rc
+
+
+def dirty_paths(project: Path):
+    """Set of dirty/untracked paths from git status (None if not a repo)."""
+    r = subprocess.run(
+        ["git", "status", "--porcelain"], cwd=project, capture_output=True, text=True
+    )
+    if r.returncode != 0:
+        return None
+    return {l[3:].split(" -> ")[-1] for l in r.stdout.splitlines() if l.strip()}
+
+
+def session_dirt(pre, post):
+    """Paths a session left behind: new dirt only — pre-existing dirt is
+    someone else's work (pilot lesson: operator's bench/ must never be
+    swept into a courier commit)."""
+    if pre is None or post is None:
+        return set()
+    return post - pre
+
+
+def courier_commit(project: Path, role: str, charter, pre, conf=None):
+    """Pilot lessons: codex sandbox can't commit; full-auto sessions
+    under-commit. Finish the session's own commit — new dirt only.
+
+    Returns True when there was nothing to commit or the commit succeeded;
+    False when `git add`/`git commit` failed — so the caller can stop instead
+    of claiming a durable handoff that did not happen (F-0008)."""
+    post = dirty_paths(project)
+    new = sorted(session_dirt(pre, post))
+    if not new:
+        return True
+    add = subprocess.run(["git", "add", "--"] + new, cwd=project, check=False)
+    if add.returncode != 0:
+        print(f"courier: git add FAILED (rc={add.returncode}) — state NOT committed for {role}")
+        return False
+    what = charter or "session artifacts"
+    scope = "audit" if all(p.startswith("audit/") for p in new) else "audit+material"
+    commit = subprocess.run(
+        ["git", "commit", "-q", "-m",
+         f"{'docs' if scope == 'audit' else 'fix'}(audit): {role.lower()} — {what} (orchestrated courier commit)"],
+        cwd=project,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if commit.returncode != 0:
+        detail = (commit.stderr or commit.stdout or "").strip()[:120]
+        print(f"courier: git commit FAILED (rc={commit.returncode}) — state NOT committed for {role}: {detail}")
+        return False
+    print(f"courier: committed the session's new dirt ({len(new)} paths, {scope}) for {role}")
+    leftover = (post - set(new)) if post else set()
+    if leftover:
+        print(f"note: {len(leftover)} dirty paths predated the session — left untouched")
+    # B5: opt-in auto-push (default off — never push without explicit opt-in).
+    if conf and conf.get("push_after_commit", "").strip().lower() in ("1", "true", "yes", "on"):
+        r = subprocess.run(["git", "push"], cwd=project, capture_output=True, text=True)
+        print("courier: git push " + ("ok" if r.returncode == 0 else f"FAILED — {r.stderr.strip()[:120]}"))
+    return True
+
+
+# ---------------------------------------------------------------- commands
+
+
+def state_and_decision(project: Path, conf):
+    audit = project / "audit"
+    # F-0004: a syntactically broken ledger row would be dropped fail-open and
+    # could yield a false 'done'; refuse to decide on a corrupt durable state.
+    malformed = ledger_malformed_rows(audit)
+    rows, fnd = effective_rows(audit)  # F-0005: reconcile with finding-file truth
+    unchecked, checked = parse_queue(audit)
+    if malformed:
+        return rows, unchecked, checked, "stop-ledger-corrupt", malformed
+    limits = parse_limits(audit)
+    # F-0005: enforce the reopen limit from the finding file's own attempts even
+    # when the ledger flag is not yet set. A finding currently 'reopened' has
+    # been reopened attempts+1 times; at reopen_limit it needs a human.
+    reopen_limit = int(limits.get("reopen_limit", 2))
+    for r in rows:
+        if r["status"] == "reopened" and "needs-human" not in r["next"]:
+            attempts = int((fnd.get(r["id"], {}) or {}).get("attempts", "0") or 0)
+            if attempts + 1 >= reopen_limit:
+                return rows, unchecked, checked, "stop-needs-human", r["id"]
+    # F-0003: AUDIT.md remediation_batch_size (§10 override) wins over the conf
+    # default when present.
+    batch = int(limits.get("remediation_batch_size", conf.get("batch_size", "8")))
+    kind, detail = decide(
+        rows, unchecked, (audit / "AUDIT.md").is_file(),
+        batch, int(conf.get("triage_batch_cap", "0") or 0),
+    )
+    # F-0011: the queue emptying is not enough to declare the audit finished —
+    # every checked pass must carry its mandatory coverage report (§4 rule 5).
+    # A checkbox without a passes/P-NN-*.md report is exactly the silent gap the
+    # methodology forbids; refuse to advance to 'done' while one exists.
+    if kind.startswith("done"):
+        missing = passes_without_coverage(audit)
+        if missing:
+            return rows, unchecked, checked, "stop-coverage-missing", missing
+    return rows, unchecked, checked, kind, detail
+
+
+def cmd_status(project: Path, conf):
+    audit = project / "audit"
+    if not (audit / "XCHECK.md").is_file():
+        raise SystemExit(f"{audit}/XCHECK.md not found — install xcheck first (bootstrap.md)")
+    rows, unchecked, checked, kind, detail = state_and_decision(project, conf)
+    counts = {}
+    for r in rows:
+        counts[r["status"]] = counts.get(r["status"], 0) + 1
+    print(f"project: {project}")
+    print(f"passes: {len(checked)} done, {len(unchecked)} queued {unchecked or ''}")
+    print(f"findings: {len(rows)} total — " + ", ".join(f"{k}:{v}" for k, v in sorted(counts.items())) or "none")
+    lock = Lock(audit, "?").read()
+    if lock:
+        print(f"lock: {lock} ({'LIVE' if pid_alive(lock.get('pid', -1)) else 'STALE'})")
+    print(f"decision: {kind}" + (f" -> {detail}" if detail else ""))
+
+
+def cmd_next(project: Path, conf, dry_run):
+    # F-0009: hold the writing lock across the WHOLE next-transaction — persist
+    # the default orchestrator.conf, read state, decide, run the session, and
+    # courier-commit — so a concurrent `next` cannot read the same queue and
+    # launch a duplicate/stale session, and an abort on a live foreign lock
+    # writes nothing (the conf write used to escape the lock, in main()).
+    lock = None
+    if not dry_run:
+        lock = Lock(project / "audit", "orchestrator")
+        lock.acquire()
+    role = None
+    try:
+        if lock:
+            # Under the lock: this is the only in-transaction default-conf write.
+            # Moved out of main(), where it preceded acquire and let an aborting
+            # `next` still create the file (§4 one-writer serialization).
+            load_conf(project / "audit", write_default=True)
+            # F-0009 hardening: re-read conf from disk UNDER the lock so the
+            # decision and the launched session act on the current file, not the
+            # pre-lock snapshot main() loaded (§4 rule 2, state from files). The
+            # lock is per-writing-session by design; a concurrent orchestrator
+            # mutating conf is already excluded by that lock — this only closes
+            # the same-process stale-snapshot window.
+            conf = load_conf(project / "audit")
+        rows, unchecked, checked, kind, detail = state_and_decision(project, conf)
+        if kind.startswith("stop-") or kind.startswith("done"):
+            report_gate(kind, detail)
+            return kind
+        role, charter = role_and_charter(kind, detail)
+        if lock:
+            lock.relabel(role)
+        rc = run_session(project, conf, role, charter, dry_run, lock=lock)
+    finally:
+        if lock:
+            lock.release()
+    if rc != 0:
+        print(f"stop: {role} session returned exit {rc} — investigate before continuing")
+        return "stop-error"
+    return kind
+
+
+def cmd_loop(project: Path, conf, dry_run, step, max_sessions, budget=None, clock=None):
+    clock = clock or time.time
+    start = clock()
+    for i in range(max_sessions):
+        if budget is not None and clock() - start >= budget:
+            print(f"stop: --budget {budget}s reached (spent {int(clock() - start)}s)")
+            return
+        kind = cmd_next(project, conf, dry_run)
+        if kind.startswith("stop-") or kind.startswith("done") or dry_run:
+            return
+        if step:
+            input("— session finished; Enter = next, Ctrl-C = stop —")
+    print(f"stop: max_sessions={max_sessions} reached (cost cap)")
+
+
+def report_gate(kind, detail):
+    if kind == "stop-triage":
+        print(f"gate: triage needed — {len(detail)} findings in reported. Dialogue: /xcheck-triage; or edit LEDGER.md")
+    elif kind == "stop-needs-human":
+        print(f"gate: ⚠ needs-human on {detail} — the human decides (see the finding file)")
+    elif kind == "stop-inconsistent":
+        print(f"stop: non-terminal statuses with no move {detail} — ledger out of sync? xcheck status")
+    elif kind == "stop-ledger-corrupt":
+        print(f"stop: LEDGER.md contains {len(detail)} row(s) unparsable as finding rows — repair the ledger, else an active finding is silently lost:")
+        for ln in detail:
+            print(f"  ✗ {ln}")
+    elif kind == "stop-coverage-missing":
+        print(f"stop: {len(detail)} checked pass(es) without a full coverage report (§4 rule 5) — a silent gap; the audit cannot count as complete:")
+        for pid in detail:
+            print(f"  ✗ {pid}: no passes/{pid}-*.md with COVERED / NOT COVERED sections")
+    elif kind == "stop-disputed":
+        # §5: disputed resolves only to accepted (Auditor/human side with the
+        # finding) or withdrawn (side against it).
+        print(f"gate: dispute — {detail} in disputed. Auditor or human decides (§5, §9.3): accepted (side with the finding) | withdrawn (against it)")
+    elif kind == "done-deferred-debt":
+        # §5 has no transition out of deferred: it is terminal debt. Reviving it
+        # is a human decision outside the automatic cycle, not a machine move.
+        print(f"audit complete with deferred debt: {detail} in deferred (terminal per §5 — the state machine has no transition out of deferred; returning it to work is a human decision outside the automatic cycle)")
+    elif kind == "done":
+        print("audit complete: queue empty, all rows terminal")
+    else:
+        print(kind)
+
+
+def cmd_unlock(project: Path, force):
+    lock = Lock(project / "audit", "?")
+    info = lock.read()
+    if info is None and not lock.path.exists():
+        print("no lock present")
+        return
+    if info and pid_alive(info.get("pid", -1)) and not force:
+        raise SystemExit(f"lock is LIVE ({info}) — remove only with --force if you are sure")
+    lock.release()
+    print(f"lock removed ({info})")
+
+
+# ---------------------------------------------------------------- selftest
+
+
+def selftest():
+    def rows(*specs):
+        return [
+            {"id": i, "title": "t", "severity": "minor", "status": s, "next": n}
+            for i, s, n in specs
+        ]
+
+    cases = [
+        # (name, rows, unchecked, audit_exists, expected_kind, expected_detail)
+        ("planner when no AUDIT.md", [], [], False, "run-planner", None),
+        ("auditor on first unchecked pass", [], ["P-01", "P-02"], True, "run-auditor", "P-01"),
+        ("triage blocks when only reported", rows(("F-0001", "reported", "human")), [], True, "stop-triage", ["F-0001"]),
+        (
+            "verify before new passes",
+            rows(("F-0001", "fixed", "Verifier"), ("F-0002", "reported", "human")),
+            ["P-03"],
+            True,
+            "run-verifier",
+            ["F-0001"],
+        ),
+        (
+            "remediate accepted CF alone before F-batch",
+            rows(("CF-0001", "accepted", "Remediator"), ("F-0002", "accepted", "Remediator")),
+            [],
+            True,
+            "run-remediator",
+            ["CF-0001"],
+        ),
+        (
+            "reopened precedes accepted",
+            rows(("F-0001", "reopened", "Remediator"), ("F-0002", "accepted", "Remediator")),
+            [],
+            True,
+            "run-remediator",
+            ["F-0001"],
+        ),
+        (
+            "needs-human trumps everything",
+            rows(("CF-0002", "reopened", "human ⚠ needs-human"), ("F-0001", "fixed", "Verifier")),
+            ["P-05"],
+            True,
+            "stop-needs-human",
+            "CF-0002",
+        ),
+        (
+            "batch capped at batch_size",
+            rows(*((f"F-{i:04d}", "accepted", "Remediator") for i in range(1, 12))),
+            [],
+            True,
+            "run-remediator",
+            [f"F-{i:04d}" for i in range(1, 9)],
+        ),
+        (
+            "reopened batch also capped at batch_size (F-0003)",
+            rows(*((f"F-{i:04d}", "reopened", "Remediator") for i in range(1, 12))),
+            [],
+            True,
+            "run-remediator",
+            [f"F-{i:04d}" for i in range(1, 9)],
+        ),
+        (
+            "passes accumulate before triage (pilot rhythm)",
+            rows(("F-0001", "reported", "human")),
+            ["P-02"],
+            True,
+            "run-auditor",
+            "P-02",
+        ),
+        (
+            "done when terminal and queue empty",
+            rows(("F-0001", "closed", "—"), ("F-0002", "superseded-by-class", "—")),
+            [],
+            True,
+            "done",
+            None,
+        ),
+        (
+            "deferred debt is done-with-debt, not inconsistent",
+            rows(("F-0001", "closed", "—"), ("F-0004", "deferred", "human")),
+            [],
+            True,
+            "done-deferred-debt",
+            ["F-0004"],
+        ),
+        (
+            "validated resumes remediation (F-0001)",
+            rows(("F-0001", "validated", "Remediator")),
+            [],
+            True,
+            "run-remediator",
+            ["F-0001"],
+        ),
+        (
+            "planned resumes remediation (F-0001)",
+            rows(("F-0001", "planned", "Remediator")),
+            [],
+            True,
+            "run-remediator",
+            ["F-0001"],
+        ),
+        (
+            "genuinely unknown status flagged inconsistent",
+            rows(("F-0001", "mystery", "Remediator")),
+            [],
+            True,
+            "stop-inconsistent",
+            ["F-0001"],
+        ),
+        (
+            "disputed is its own gate, not inconsistent",
+            rows(("F-0001", "closed", "—"), ("F-0002", "disputed", "human")),
+            [],
+            True,
+            "stop-disputed",
+            ["F-0002"],
+        ),
+    ]
+    failed = 0
+    for name, rws, unchecked, exists, want_kind, want_detail in cases:
+        kind, detail = decide(rws, unchecked, exists, batch_size=8)
+        ok = kind == want_kind and detail == want_detail
+        print(f"{'PASS' if ok else 'FAIL'}: {name}" + ("" if ok else f" -> got {kind}, {detail}"))
+        failed += 0 if ok else 1
+
+    # ledger/queue parsers on a fixture
+    with tempfile.TemporaryDirectory() as td:
+        audit = Path(td)
+        (audit / "LEDGER.md").write_text(
+            "| id | title | severity | status | next | updated |\n"
+            "|---|---|---|---|---|---|\n"
+            "| F-0012 | Mixed premium terminology | major | fixed | Verifier | 2026-07-18 |\n"
+            "| CF-0001 | A class | minor | reopened | human ⚠ needs-human | 2026-07-18 |\n",
+            encoding="utf-8",
+        )
+        (audit / "AUDIT.md").write_text(
+            "## 4. Pass queue\n- [x] P-01 — terminology × units: done\n- [ ] P-02 — contradictions × units: pending\n",
+            encoding="utf-8",
+        )
+        rws = parse_ledger(audit)
+        unchecked, checked = parse_queue(audit)
+        ok = (
+            len(rws) == 2
+            and rws[0]["id"] == "F-0012"
+            and rws[0]["status"] == "fixed"
+            and "needs-human" in rws[1]["next"]
+            and unchecked == ["P-02"]
+            and checked == ["P-01"]
+        )
+        print(f"{'PASS' if ok else 'FAIL'}: ledger/queue parsers on fixture")
+        failed += 0 if ok else 1
+
+    # B1: triage_batch_cap forces a triage sitting before more passes
+    rws = rows(("F-0001", "reported", "human"), ("F-0002", "reported", "human"), ("F-0003", "reported", "human"))
+    k, d = decide(rws, ["P-05"], True, batch_size=8, triage_cap=3)
+    ok = k == "stop-triage" and d == ["F-0001", "F-0002", "F-0003"]
+    print(f"{'PASS' if ok else 'FAIL'}: triage_batch_cap stops before more passes" + ("" if ok else f" -> {k},{d}"))
+    failed += 0 if ok else 1
+    k, d = decide(rws, ["P-05"], True, batch_size=8, triage_cap=4)
+    ok = k == "run-auditor" and d == "P-05"  # below cap -> keep auditing
+    print(f"{'PASS' if ok else 'FAIL'}: triage_batch_cap below cap keeps auditing" + ("" if ok else f" -> {k},{d}"))
+    failed += 0 if ok else 1
+    k, d = decide(rws, ["P-05"], True, batch_size=8, triage_cap=0)
+    ok = k == "run-auditor"  # 0 = unbounded, current behavior
+    print(f"{'PASS' if ok else 'FAIL'}: triage_batch_cap=0 is unbounded" + ("" if ok else f" -> {k},{d}"))
+    failed += 0 if ok else 1
+
+    # B4: cmd_loop honors --budget via injected clock (budget check precedes any session)
+    ticks = iter([100.0, 105.0, 105.0])  # start, first check over budget, print
+
+    def fake_clock():
+        return next(ticks)
+
+    import io
+    import contextlib
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        cmd_loop(Path("/nonexistent"), {"batch_size": "8", "session_note": ""},
+                 False, False, max_sessions=5, budget=3.0, clock=fake_clock)
+    ok = "--budget 3" in buf.getvalue()
+    print(f"{'PASS' if ok else 'FAIL'}: loop honors --budget wall-clock cap" + ("" if ok else f" -> {buf.getvalue()[:80]}"))
+    failed += 0 if ok else 1
+
+    # B2: lint catches an orphan + a class-membership break on a fixture
+    with tempfile.TemporaryDirectory() as td:
+        audit = Path(td) / "audit"
+        (audit / "findings").mkdir(parents=True)
+        (audit / "LEDGER.md").write_text(
+            "| id | title | severity | status | next | updated |\n|---|---|---|---|---|---|\n"
+            "| F-0001 | a | major | superseded-by-class | — | 2026-07-21 |\n"
+            "| CF-0001 | c | major | closed | — | 2026-07-21 |\n",
+            encoding="utf-8",
+        )
+        # F-0001 says superseded but frontmatter lacks class; CF lists a missing member; orphan F-0002 file
+        (audit / "findings" / "F-0001-a.md").write_text(
+            "---\nid: F-0001\nstatus: superseded-by-class\nclass: null\n---\n", encoding="utf-8")
+        (audit / "findings" / "CF-0001-c.md").write_text(
+            "---\nid: CF-0001\nstatus: closed\nmembers: [F-0001, F-0099]\n---\n", encoding="utf-8")
+        (audit / "findings" / "F-0002-orphan.md").write_text(
+            "---\nid: F-0002\nstatus: reported\n---\n", encoding="utf-8")
+        import io as _io
+        import contextlib as _cl
+        b = _io.StringIO()
+        with _cl.redirect_stdout(b):
+            rc = cmd_lint(Path(td))
+        out = b.getvalue()
+        ok = rc == 1 and "orphan" in out and "F-0099 does not exist" in out and "no class: CF-xxxx" in out
+        print(f"{'PASS' if ok else 'FAIL'}: lint catches orphan + broken class membership" + ("" if ok else f" -> {out[:150]}"))
+        failed += 0 if ok else 1
+
+    # courier dirt-diff logic
+    pre = {"bench/x.c", "audit/LEDGER.md"}
+    post = {"bench/x.c", "audit/LEDGER.md", "audit/findings/F-0001-a.md", "src/core/engine.c"}
+    got = session_dirt(pre, post)
+    ok = got == {"audit/findings/F-0001-a.md", "src/core/engine.c"}
+    print(f"{'PASS' if ok else 'FAIL'}: courier commits only the session's new dirt")
+    failed += 0 if ok else 1
+    ok = session_dirt(None, post) == set() and session_dirt(pre, None) == set()
+    print(f"{'PASS' if ok else 'FAIL'}: courier no-ops outside a git repo")
+    failed += 0 if ok else 1
+
+    # lock lifecycle
+    with tempfile.TemporaryDirectory() as td:
+        lk = Lock(Path(td), "Test")
+        lk.acquire()
+        try:
+            Lock(Path(td), "Test2").acquire()
+            print("FAIL: double-acquire succeeded")
+            failed += 1
+        except SystemExit:
+            print("PASS: live lock blocks second acquire")
+        lk.release()
+        lk2 = Lock(Path(td), "Test3")
+        lk2.acquire()
+        lk2.release()
+        print("PASS: lock releases and re-acquires")
+
+    import io as _io2
+    import contextlib as _cl2
+    import subprocess as _sp
+
+    def _ledger(*body):
+        head = "| id | title | severity | status | next | updated |\n|---|---|---|---|---|---|\n"
+        return head + "".join(body)
+
+    # F-0003: AUDIT.md remediation_batch_size (§10 override) governs the batch
+    with tempfile.TemporaryDirectory() as td:
+        proj = Path(td)
+        audit = proj / "audit"
+        (audit / "findings").mkdir(parents=True)
+        (audit / "XCHECK.md").write_text("x", encoding="utf-8")
+        (audit / "LEDGER.md").write_text(
+            _ledger(*(f"| F-{i:04d} | t | major | accepted | Remediator | 2026-07-21 |\n" for i in range(1, 5))),
+            encoding="utf-8")
+        conf = {"batch_size": "8", "triage_batch_cap": "0", "session_note": ""}
+        (audit / "AUDIT.md").write_text("## 5. Limits\nremediation_batch_size: 2\n", encoding="utf-8")
+        _, _, _, k, d = state_and_decision(proj, conf)
+        ok = k == "run-remediator" and d == ["F-0001", "F-0002"]
+        print(f"{'PASS' if ok else 'FAIL'}: AUDIT.md remediation_batch_size caps the batch (F-0003)" + ("" if ok else f" -> {k},{d}"))
+        failed += 0 if ok else 1
+        (audit / "AUDIT.md").write_text("## 5. Limits\n", encoding="utf-8")  # no override -> conf default 8
+        _, _, _, k, d = state_and_decision(proj, conf)
+        ok = k == "run-remediator" and d == ["F-0001", "F-0002", "F-0003", "F-0004"]
+        print(f"{'PASS' if ok else 'FAIL'}: no AUDIT.md override falls back to conf default (F-0003)" + ("" if ok else f" -> {k},{d}"))
+        failed += 0 if ok else 1
+        # reopened findings honor the same batch cap end-to-end (reopen_limit
+        # raised so the needs-human gate does not fire first)
+        (audit / "AUDIT.md").write_text("## 5. Limits\nremediation_batch_size: 2\nreopen_limit: 99\n", encoding="utf-8")
+        (audit / "LEDGER.md").write_text(
+            _ledger(*(f"| F-{i:04d} | t | major | reopened | Remediator | 2026-07-21 |\n" for i in range(1, 5))),
+            encoding="utf-8")
+        for i in range(1, 5):
+            (audit / "findings" / f"F-{i:04d}-x.md").write_text(
+                f"---\nid: F-{i:04d}\nstatus: reopened\nattempts: 0\n---\n", encoding="utf-8")
+        _, _, _, k, d = state_and_decision(proj, conf)
+        ok = k == "run-remediator" and d == ["F-0001", "F-0002"]
+        print(f"{'PASS' if ok else 'FAIL'}: reopened batch honors remediation_batch_size (F-0003)" + ("" if ok else f" -> {k},{d}"))
+        failed += 0 if ok else 1
+
+    # F-0004: a malformed ledger row stops the cycle instead of a false 'done'
+    with tempfile.TemporaryDirectory() as td:
+        proj = Path(td)
+        audit = proj / "audit"
+        (audit / "findings").mkdir(parents=True)
+        (audit / "XCHECK.md").write_text("x", encoding="utf-8")
+        (audit / "AUDIT.md").write_text("- [x] P-01 — done\n", encoding="utf-8")
+        (audit / "LEDGER.md").write_text(
+            _ledger("| F-0003 | active work | major | accepted! | Remediator | 2026-07-21 |\n"),
+            encoding="utf-8")
+        conf = {"batch_size": "8", "triage_batch_cap": "0", "session_note": ""}
+        _, _, _, k, d = state_and_decision(proj, conf)
+        ok = k == "stop-ledger-corrupt"
+        print(f"{'PASS' if ok else 'FAIL'}: malformed ledger row -> stop-ledger-corrupt, not done (F-0004)" + ("" if ok else f" -> {k}"))
+        failed += 0 if ok else 1
+        b = _io2.StringIO()
+        with _cl2.redirect_stdout(b):
+            rc = cmd_lint(proj)
+        ok = rc == 1 and "malformed" in b.getvalue()
+        print(f"{'PASS' if ok else 'FAIL'}: lint flags a malformed ledger row (F-0004)" + ("" if ok else f" -> rc={rc} {b.getvalue()[:80]}"))
+        failed += 0 if ok else 1
+        (audit / "LEDGER.md").unlink()
+        b = _io2.StringIO()
+        with _cl2.redirect_stdout(b):
+            rc = cmd_lint(proj)
+        ok = rc == 1 and "not found" in b.getvalue()
+        print(f"{'PASS' if ok else 'FAIL'}: lint errors on a missing ledger (F-0004)" + ("" if ok else f" -> rc={rc} {b.getvalue()[:80]}"))
+        failed += 0 if ok else 1
+
+    # F-0005: finding-file truth overrides a stale derived ledger
+    with tempfile.TemporaryDirectory() as td:
+        proj = Path(td)
+        audit = proj / "audit"
+        (audit / "findings").mkdir(parents=True)
+        (audit / "XCHECK.md").write_text("x", encoding="utf-8")
+        (audit / "AUDIT.md").write_text("## 5. Limits\n", encoding="utf-8")
+        conf = {"batch_size": "8", "triage_batch_cap": "0", "session_note": ""}
+        (audit / "LEDGER.md").write_text(_ledger("| F-0001 | t | major | closed | — | 2026-07-21 |\n"), encoding="utf-8")
+        (audit / "findings" / "F-0001-a.md").write_text(
+            "---\nid: F-0001\nstatus: accepted\nattempts: 0\n---\n", encoding="utf-8")
+        _, _, _, k, d = state_and_decision(proj, conf)
+        ok = k == "run-remediator" and d == ["F-0001"]
+        print(f"{'PASS' if ok else 'FAIL'}: non-triage drift takes frontmatter truth, not done (F-0005)" + ("" if ok else f" -> {k},{d}"))
+        failed += 0 if ok else 1
+        # a finding file present but ABSENT from the ledger is still canonical
+        # state (§2) — it must not vanish into a false 'done'
+        (audit / "LEDGER.md").write_text(
+            "| id | title | severity | status | next | updated |\n|---|---|---|---|---|---|\n",
+            encoding="utf-8")
+        (audit / "findings" / "F-0001-a.md").write_text(
+            "---\nid: F-0001\ntitle: t\nseverity: major\nstatus: accepted\nattempts: 0\n---\n", encoding="utf-8")
+        _, _, _, k, d = state_and_decision(proj, conf)
+        ok = k == "run-remediator" and d == ["F-0001"]
+        print(f"{'PASS' if ok else 'FAIL'}: finding file missing from ledger is not lost to 'done' (F-0005)" + ("" if ok else f" -> {k},{d}"))
+        failed += 0 if ok else 1
+        (audit / "AUDIT.md").write_text("## 5. Limits\nreopen_limit: 1\n", encoding="utf-8")
+        (audit / "LEDGER.md").write_text(_ledger("| F-0001 | t | major | reopened | Remediator | 2026-07-21 |\n"), encoding="utf-8")
+        (audit / "findings" / "F-0001-a.md").write_text(
+            "---\nid: F-0001\nstatus: reopened\nattempts: 0\n---\n", encoding="utf-8")
+        _, _, _, k, d = state_and_decision(proj, conf)
+        ok = k == "stop-needs-human" and d == "F-0001"
+        print(f"{'PASS' if ok else 'FAIL'}: reopen_limit breach from attempts -> stop-needs-human (F-0005)" + ("" if ok else f" -> {k},{d}"))
+        failed += 0 if ok else 1
+        (audit / "AUDIT.md").write_text("## 5. Limits\n", encoding="utf-8")
+        (audit / "LEDGER.md").write_text(_ledger("| F-0001 | t | major | rejected | — | 2026-07-21 |\n"), encoding="utf-8")
+        (audit / "findings" / "F-0001-a.md").write_text(
+            "---\nid: F-0001\nstatus: closed\nattempts: 0\n---\n", encoding="utf-8")
+        b = _io2.StringIO()
+        with _cl2.redirect_stdout(b):
+            cmd_metrics(proj)
+        out = b.getvalue()
+        ok = "closed:1" in out and "out of sync with finding files" in out
+        print(f"{'PASS' if ok else 'FAIL'}: metrics count frontmatter truth and note drift (F-0005)" + ("" if ok else f" -> {out[:120]}"))
+        failed += 0 if ok else 1
+
+    # F-0008: courier reports failure instead of a false success
+    _saved_dirty = globals()["dirty_paths"]
+    _orig_run = _sp.run
+    globals()["dirty_paths"] = lambda project: {"audit/findings/F-0001-a.md"}
+    _mode = {"fail": None}
+
+    class _R:
+        def __init__(self, rc):
+            self.returncode = rc
+            self.stderr = ""
+            self.stdout = ""
+
+    def _fake_git(cmd, **k):
+        if cmd[:2] == ["git", "add"]:
+            return _R(1 if _mode["fail"] == "add" else 0)
+        if cmd[:2] == ["git", "commit"]:
+            return _R(1 if _mode["fail"] == "commit" else 0)
+        return _R(0)
+
+    _sp.run = _fake_git
+    try:
+        for fail, expect_ok, needle in [("add", False, "git add FAILED"),
+                                        ("commit", False, "git commit FAILED"),
+                                        (None, True, "committed the session")]:
+            _mode["fail"] = fail
+            bb = _io2.StringIO()
+            with _cl2.redirect_stdout(bb):
+                res = courier_commit(Path("/x"), "Remediator", "finding F-0001", set(), None)
+            out = bb.getvalue()
+            ok = res == expect_ok and needle in out and (expect_ok or "committed the session" not in out)
+            print(f"{'PASS' if ok else 'FAIL'}: courier {fail or 'success'} -> {'commit' if expect_ok else 'failure reported'} (F-0008)" + ("" if ok else f" -> {res},{out[:80]}"))
+            failed += 0 if ok else 1
+    finally:
+        _sp.run = _orig_run
+        globals()["dirty_paths"] = _saved_dirty
+
+    # F-0009: run_session serializes subprocess + courier inside the lock
+    events = []
+
+    class _FakeLock:
+        def __init__(self, audit, role):
+            self.role = role
+
+        def acquire(self):
+            events.append("acquire")
+
+        def release(self):
+            events.append("release")
+
+        def relabel(self, role):
+            self.role = role
+
+    def _fake_courier(project, role, charter, pre, conf=None):
+        events.append("courier")
+        return True
+
+    def _fake_sess(cmd, **k):
+        events.append("subprocess")
+        return _R(0)
+
+    _saved = {n: globals()[n] for n in ("Lock", "courier_commit", "dirty_paths")}
+    _orig_run2 = _sp.run
+    with tempfile.TemporaryDirectory() as td:
+        proj = Path(td)
+        (proj / "audit").mkdir()
+        conf = {"remediator_cmd": "true {prompt}", "session_note": ""}
+        globals()["Lock"] = _FakeLock
+        globals()["courier_commit"] = _fake_courier
+        globals()["dirty_paths"] = lambda p: set()
+        _sp.run = _fake_sess
+        try:
+            events.clear()
+            run_session(proj, conf, "Remediator", "finding F-0001", dry_run=False, lock=None)
+            ok = events == ["acquire", "subprocess", "courier", "release"]
+            print(f"{'PASS' if ok else 'FAIL'}: own-lock session runs courier before release (F-0009)" + ("" if ok else f" -> {events}"))
+            failed += 0 if ok else 1
+            events.clear()
+            run_session(proj, conf, "Remediator", "finding F-0001", dry_run=False, lock=_FakeLock(proj / "audit", "orchestrator"))
+            ok = events == ["subprocess", "courier"]
+            print(f"{'PASS' if ok else 'FAIL'}: caller-held lock: session does not re-lock (F-0009)" + ("" if ok else f" -> {events}"))
+            failed += 0 if ok else 1
+        finally:
+            _sp.run = _orig_run2
+            for _n, _v in _saved.items():
+                globals()[_n] = _v
+
+    # F-0009: NO orchestrator write (incl. the log dir) escapes the lock — an
+    # observer inside acquire() must not yet see audit/orchestrator-logs.
+    _saved2 = {n: globals()[n] for n in ("Lock", "courier_commit", "dirty_paths")}
+    _orig_run3 = _sp.run
+    with tempfile.TemporaryDirectory() as td:
+        proj = Path(td)
+        (proj / "audit").mkdir()
+        conf = {"remediator_cmd": "true {prompt}", "session_note": ""}
+        obs = {"logs_at_acquire": None}
+
+        class _ObsLock:
+            def __init__(self, audit, role):
+                self.audit = Path(audit)
+                self.role = role
+
+            def acquire(self):
+                obs["logs_at_acquire"] = (self.audit / "orchestrator-logs").exists()
+
+            def release(self):
+                pass
+
+            def relabel(self, role):
+                self.role = role
+
+        globals()["Lock"] = _ObsLock
+        globals()["courier_commit"] = lambda *a, **k: True
+        globals()["dirty_paths"] = lambda p: set()
+        _sp.run = lambda cmd, **k: _R(0)
+        try:
+            run_session(proj, conf, "Remediator", "finding F-0001", dry_run=False, lock=None)
+            ok = obs["logs_at_acquire"] is False
+            print(f"{'PASS' if ok else 'FAIL'}: no orchestrator write precedes lock acquire (F-0009)" + ("" if ok else f" -> logs_at_acquire={obs['logs_at_acquire']}"))
+            failed += 0 if ok else 1
+        finally:
+            _sp.run = _orig_run3
+            for _n, _v in _saved2.items():
+                globals()[_n] = _v
+
+    # F-0009 (sanctioned re-take): the WHOLE next-transaction is under the lock,
+    # incl. the default-conf write. Drive a LIVE foreign lock through main()/
+    # cmd_next (not just run_session): an aborting `next` must write NOTHING.
+    # This is the regression the run_session-only checks above could not catch —
+    # the conf write escaped in main(), before cmd_next acquired the lock.
+    with tempfile.TemporaryDirectory() as td:
+        proj = Path(td)
+        audit = proj / "audit"
+        audit.mkdir()
+        (audit / "XCHECK.md").write_text("x", encoding="utf-8")
+        # a live foreign lock: this process's own pid is alive
+        (audit / ".lock").write_text(
+            json.dumps({"pid": os.getpid(), "role": "orchestrator", "started": "x", "host": "x"}),
+            encoding="utf-8")
+        conf_path = audit / "orchestrator.conf"
+        before = conf_path.exists()
+        aborted, msg = False, ""
+        b = _io2.StringIO()
+        with _cl2.redirect_stdout(b):
+            try:
+                main(["xcheck", "--project", str(proj), "next"])
+            except SystemExit as e:
+                aborted, msg = True, str(e)
+        after = conf_path.exists()
+        ok = aborted and before is False and after is False and "LIVE" in msg
+        print(f"{'PASS' if ok else 'FAIL'}: live foreign lock aborts `next` via main with NO pre-lock conf write (F-0009)"
+              + ("" if ok else f" -> aborted={aborted} before={before} after={after}"))
+        failed += 0 if ok else 1
+
+    # F-0010: os.kill EPERM (PermissionError) means the process is ALIVE, not
+    # dead — only ESRCH (ProcessLookupError) is dead.
+    _orig_kill = os.kill
+    try:
+        os.kill = lambda pid, sig: (_ for _ in ()).throw(PermissionError())
+        alive_eperm = pid_alive(4242) is True
+        os.kill = lambda pid, sig: (_ for _ in ()).throw(ProcessLookupError())
+        dead_esrch = pid_alive(4242) is False
+    finally:
+        os.kill = _orig_kill
+    ok = alive_eperm and dead_esrch
+    print(f"{'PASS' if ok else 'FAIL'}: pid_alive treats EPERM as alive, ESRCH as dead (F-0010)" + ("" if ok else f" -> eperm={alive_eperm} esrch={dead_esrch}"))
+    failed += 0 if ok else 1
+    with tempfile.TemporaryDirectory() as td:
+        proj = Path(td)
+        (proj / "audit").mkdir()
+        (proj / "audit" / ".lock").write_text(
+            json.dumps({"pid": 4242, "role": "orchestrator", "started": "x", "host": "x"}), encoding="utf-8")
+        os.kill = lambda pid, sig: (_ for _ in ()).throw(PermissionError())
+        try:
+            refused = False
+            b = _io2.StringIO()
+            with _cl2.redirect_stdout(b):
+                try:
+                    cmd_unlock(proj, False)
+                except SystemExit:
+                    refused = True
+            still = (proj / "audit" / ".lock").exists()
+        finally:
+            os.kill = _orig_kill
+        ok = refused and still
+        print(f"{'PASS' if ok else 'FAIL'}: unlock refuses an EPERM-live lock without --force (F-0010)" + ("" if ok else f" -> refused={refused} still={still}"))
+        failed += 0 if ok else 1
+
+    # F-0011: a checked pass with no complete coverage report blocks 'done'
+    with tempfile.TemporaryDirectory() as td:
+        proj = Path(td)
+        audit = proj / "audit"
+        audit.mkdir()
+        (audit / "XCHECK.md").write_text("x", encoding="utf-8")
+        (audit / "AUDIT.md").write_text("## 4. Pass queue\n- [x] P-03 — done\n", encoding="utf-8")
+        (audit / "LEDGER.md").write_text(
+            "| id | title | severity | status | next | updated |\n|---|---|---|---|---|---|\n", encoding="utf-8")
+        conf = {"batch_size": "8", "triage_batch_cap": "0", "session_note": ""}
+        b = _io2.StringIO()
+        with _cl2.redirect_stdout(b):
+            k_noreport = cmd_next(proj, conf, dry_run=False)
+        (audit / "passes").mkdir()
+        pf = audit / "passes" / "P-03-x.md"
+        pf.write_text("## Coverage\n**COVERED:** a\n**NOT COVERED:** b\n", encoding="utf-8")
+        b = _io2.StringIO()
+        with _cl2.redirect_stdout(b):
+            k_complete = cmd_next(proj, conf, dry_run=False)
+        pf.write_text("## Coverage\njust prose, no markers\n", encoding="utf-8")
+        b = _io2.StringIO()
+        with _cl2.redirect_stdout(b):
+            k_incomplete = cmd_next(proj, conf, dry_run=False)
+        # adversarial (Verifier F-0011 reopen): the bare uppercase words in prose
+        # must NOT satisfy the gate — a marker is line-anchored, not a mention.
+        pf.write_text(
+            "This sentence merely mentions COVERED and NOT COVERED without reporting scope.\n",
+            encoding="utf-8")
+        b = _io2.StringIO()
+        with _cl2.redirect_stdout(b):
+            k_prose = cmd_next(proj, conf, dry_run=False)
+        # each real Auditor marker style still passes (### / bare COVERED:)
+        pf.write_text("### COVERED\na\n### NOT COVERED\nb\n", encoding="utf-8")
+        b = _io2.StringIO()
+        with _cl2.redirect_stdout(b):
+            k_hdr = cmd_next(proj, conf, dry_run=False)
+        pf.write_text("## Coverage\nCOVERED: a\nNOT COVERED: b\n", encoding="utf-8")
+        b = _io2.StringIO()
+        with _cl2.redirect_stdout(b):
+            k_bare = cmd_next(proj, conf, dry_run=False)
+        ok = (k_noreport == "stop-coverage-missing" and k_complete == "done"
+              and k_incomplete == "stop-coverage-missing" and k_prose == "stop-coverage-missing"
+              and k_hdr == "done" and k_bare == "done")
+        print(f"{'PASS' if ok else 'FAIL'}: coverage-report gate blocks 'done' on a checked pass w/o report (F-0011)" + ("" if ok else f" -> {k_noreport},{k_complete},{k_incomplete},{k_prose},{k_hdr},{k_bare}"))
+        failed += 0 if ok else 1
+        pf.unlink()
+        b = _io2.StringIO()
+        with _cl2.redirect_stdout(b):
+            cmd_metrics(proj)
+        ok = "passes without coverage report: 1" in b.getvalue()
+        print(f"{'PASS' if ok else 'FAIL'}: metrics reports passes without coverage report (F-0011)" + ("" if ok else f" -> {b.getvalue()[:120]}"))
+        failed += 0 if ok else 1
+
+    # F-0012: a rejected CF with an 'accepted' member is legal (§8 rule 4)
+    with tempfile.TemporaryDirectory() as td:
+        audit = Path(td) / "audit"
+        (audit / "findings").mkdir(parents=True)
+        (audit / "LEDGER.md").write_text(_ledger(
+            "| F-0001 | a | major | accepted | Remediator | 2026-07-21 |\n"
+            "| CF-0001 | c | major | rejected | — | 2026-07-21 |\n"), encoding="utf-8")
+        (audit / "findings" / "F-0001-a.md").write_text(
+            "---\nid: F-0001\nstatus: accepted\n---\n", encoding="utf-8")
+        (audit / "findings" / "CF-0001-c.md").write_text(
+            "---\nid: CF-0001\nstatus: rejected\nmembers: [F-0001]\n---\n", encoding="utf-8")
+        b = _io2.StringIO()
+        with _cl2.redirect_stdout(b):
+            rc = cmd_lint(Path(td))
+        ok = rc == 0 and "clean" in b.getvalue()
+        print(f"{'PASS' if ok else 'FAIL'}: lint accepts rejected-CF member reverted to accepted (F-0012)" + ("" if ok else f" -> rc={rc} {b.getvalue()[:120]}"))
+        failed += 0 if ok else 1
+
+    # F-0012 (Verifier reopen): the PENDING pre-sync state is also legal — CF
+    # rejected, member file still `superseded-by-class`, LEDGER already `accepted`
+    # (§2 rule 3 member-reversion delta). lint must not flag the ledger/file gap.
+    with tempfile.TemporaryDirectory() as td:
+        audit = Path(td) / "audit"
+        (audit / "findings").mkdir(parents=True)
+        (audit / "LEDGER.md").write_text(_ledger(
+            "| F-0001 | a | major | accepted | Remediator | 2026-07-21 |\n"
+            "| CF-0001 | c | major | rejected | — | 2026-07-21 |\n"), encoding="utf-8")
+        (audit / "findings" / "F-0001-a.md").write_text(
+            "---\nid: F-0001\nstatus: superseded-by-class\nclass: CF-0001\n---\n", encoding="utf-8")
+        (audit / "findings" / "CF-0001-c.md").write_text(
+            "---\nid: CF-0001\nstatus: rejected\nmembers: [F-0001]\n---\n", encoding="utf-8")
+        b = _io2.StringIO()
+        with _cl2.redirect_stdout(b):
+            rc = cmd_lint(Path(td))
+        ok = rc == 0 and "clean" in b.getvalue()
+        print(f"{'PASS' if ok else 'FAIL'}: lint accepts pending superseded->accepted member reversion (F-0012)" + ("" if ok else f" -> rc={rc} {b.getvalue()[:160]}"))
+        failed += 0 if ok else 1
+
+    # F-0013: filename<->id mismatch and duplicate ids are caught; control is clean
+    def _lint_out(setup):
+        with tempfile.TemporaryDirectory() as td:
+            audit = Path(td) / "audit"
+            (audit / "findings").mkdir(parents=True)
+            setup(audit)
+            b = _io2.StringIO()
+            with _cl2.redirect_stdout(b):
+                rc = cmd_lint(Path(td))
+            return rc, b.getvalue()
+
+    def _mismatch(audit):
+        (audit / "LEDGER.md").write_text(_ledger("| F-0001 | a | major | accepted | Remediator | 2026-07-21 |\n"), encoding="utf-8")
+        (audit / "findings" / "F-9999-wrong.md").write_text("---\nid: F-0001\nstatus: accepted\n---\n", encoding="utf-8")
+
+    def _dup(audit):
+        (audit / "LEDGER.md").write_text(_ledger("| F-0001 | a | major | accepted | Remediator | 2026-07-21 |\n"), encoding="utf-8")
+        (audit / "findings" / "F-0001-a.md").write_text("---\nid: F-0001\nstatus: accepted\n---\n", encoding="utf-8")
+        (audit / "findings" / "F-0001-b.md").write_text("---\nid: F-0001\nstatus: accepted\n---\n", encoding="utf-8")
+
+    def _control(audit):
+        (audit / "LEDGER.md").write_text(_ledger("| F-0001 | a | major | accepted | Remediator | 2026-07-21 |\n"), encoding="utf-8")
+        (audit / "findings" / "F-0001-a.md").write_text("---\nid: F-0001\nstatus: accepted\n---\n", encoding="utf-8")
+
+    # adversarial (Verifier F-0013 reopen): a finding file with valid frontmatter
+    # but NO `id` was counted-but-unchecked and passed as clean. It must be flagged.
+    def _noid(audit):
+        (audit / "LEDGER.md").write_text(_ledger(""), encoding="utf-8")
+        (audit / "findings" / "F-0001-no-id.md").write_text("---\nstatus: accepted\n---\n", encoding="utf-8")
+
+    rc1, o1 = _lint_out(_mismatch)
+    rc2, o2 = _lint_out(_dup)
+    rc3, o3 = _lint_out(_control)
+    rc4, o4 = _lint_out(_noid)
+    ok = (rc1 == 1 and "F-9999" in o1 and "!= frontmatter id" in o1
+          and rc2 == 1 and "share this id" in o2
+          and rc3 == 0 and "clean" in o3
+          and rc4 == 1 and "no 'id'" in o4)
+    print(f"{'PASS' if ok else 'FAIL'}: lint catches filename/id mismatch + duplicate id + missing id, control clean (F-0013)" + ("" if ok else f" -> {rc1}/{o1[:60]} | {rc2}/{o2[:60]} | {rc3} | {rc4}/{o4[:60]}"))
+    failed += 0 if ok else 1
+
+    # F-0014: `next` is a fixed vocabulary, not any string containing needs-human
+    def _next_case(val):
+        with tempfile.TemporaryDirectory() as td:
+            audit = Path(td) / "audit"
+            (audit / "findings").mkdir(parents=True)
+            (audit / "LEDGER.md").write_text(_ledger(f"| F-0001 | a | major | accepted | {val} | 2026-07-21 |\n"), encoding="utf-8")
+            (audit / "findings" / "F-0001-a.md").write_text("---\nid: F-0001\nstatus: accepted\n---\n", encoding="utf-8")
+            b = _io2.StringIO()
+            with _cl2.redirect_stdout(b):
+                rc = cmd_lint(Path(td))
+            return rc
+    reject_vals = ["garbage needs-human garbage", "", "⚠ needs-human extra"]
+    accept_vals = ["⚠ needs-human", "human ⚠ needs-human", "Remediator", "human", "—"]
+    ok = all(_next_case(v) == 1 for v in reject_vals) and all(_next_case(v) == 0 for v in accept_vals)
+    print(f"{'PASS' if ok else 'FAIL'}: lint validates next vocabulary strictly (F-0014)" + ("" if ok else " -> " + str([(v, _next_case(v)) for v in reject_vals + accept_vals])))
+    failed += 0 if ok else 1
+
+    # F-0015: auditor accuracy denominator = only findings past validation
+    def _metrics_out(rows_spec):
+        with tempfile.TemporaryDirectory() as td:
+            audit = Path(td) / "audit"
+            (audit / "findings").mkdir(parents=True)
+            (audit / "LEDGER.md").write_text(
+                _ledger(*(f"| {i} | t | major | {s} | {n} | 2026-07-21 |\n" for i, s, n in rows_spec)), encoding="utf-8")
+            for i, s, n in rows_spec:
+                (audit / "findings" / f"{i}-x.md").write_text(
+                    f"---\nid: {i}\ntitle: t\nseverity: major\nstatus: {s}\nattempts: 0\n---\n", encoding="utf-8")
+            b = _io2.StringIO()
+            with _cl2.redirect_stdout(b):
+                cmd_metrics(Path(td))
+            return b.getvalue()
+    o_acc = _metrics_out([("F-0001", "rejected", "—"), ("F-0002", "deferred", "human"),
+                          ("F-0003", "accepted", "Remediator"), ("F-0004", "disputed", "human"),
+                          ("F-0005", "closed", "—")])
+    o_acc_na = _metrics_out([("F-0001", "accepted", "Remediator")])
+    ok = "auditor accuracy (survived validation): 50.0%" in o_acc and "auditor accuracy (survived validation): n/a" in o_acc_na
+    print(f"{'PASS' if ok else 'FAIL'}: auditor accuracy counts only validated pool, n/a when empty (F-0015)" + ("" if ok else f" -> {o_acc[o_acc.find('auditor'):][:60]} | {o_acc_na[o_acc_na.find('auditor'):][:60]}"))
+    failed += 0 if ok else 1
+
+    # F-0016: fix durability denominator = verdicts (closed|reopened), numerator = closed@0
+    def _dur_out(rows_spec):
+        with tempfile.TemporaryDirectory() as td:
+            audit = Path(td) / "audit"
+            (audit / "findings").mkdir(parents=True)
+            (audit / "LEDGER.md").write_text(
+                _ledger(*(f"| {i} | t | major | {s} | — | 2026-07-21 |\n" for i, s, a in rows_spec)), encoding="utf-8")
+            for i, s, a in rows_spec:
+                (audit / "findings" / f"{i}-x.md").write_text(
+                    f"---\nid: {i}\ntitle: t\nseverity: major\nstatus: {s}\nattempts: {a}\n---\n", encoding="utf-8")
+            b = _io2.StringIO()
+            with _cl2.redirect_stdout(b):
+                cmd_metrics(Path(td))
+            return b.getvalue()
+    d_mix = _dur_out([("F-0001", "closed", "0"), ("F-0002", "reopened", "0"), ("F-0003", "superseded-by-class", "0")])
+    d_reop = _dur_out([("F-0001", "reopened", "0")])
+    d_closed = _dur_out([("F-0001", "closed", "0")])
+    d_closed1 = _dur_out([("F-0001", "closed", "1")])
+    ok = ("fix durability (closed first pass):      50.0%" in d_mix
+          and "fix durability (closed first pass):      0.0%" in d_reop
+          and "fix durability (closed first pass):      100.0%" in d_closed
+          and "fix durability (closed first pass):      0.0%" in d_closed1)
+    print(f"{'PASS' if ok else 'FAIL'}: fix durability excludes superseded, reopened=fail, closed@0=success (F-0016)" + ("" if ok else f" -> {[d_mix, d_reop, d_closed, d_closed1]}"))
+    failed += 0 if ok else 1
+
+    # F-0017: metrics report total absorbed members of class findings
+    with tempfile.TemporaryDirectory() as td:
+        audit = Path(td) / "audit"
+        (audit / "findings").mkdir(parents=True)
+        (audit / "LEDGER.md").write_text(_ledger(
+            "| F-0001 | a | major | superseded-by-class | — | 2026-07-21 |\n"
+            "| F-0002 | b | major | superseded-by-class | — | 2026-07-21 |\n"
+            "| CF-0001 | c | major | accepted | Remediator | 2026-07-21 |\n"), encoding="utf-8")
+        (audit / "findings" / "F-0001-a.md").write_text("---\nid: F-0001\nstatus: superseded-by-class\n---\n", encoding="utf-8")
+        (audit / "findings" / "F-0002-b.md").write_text("---\nid: F-0002\nstatus: superseded-by-class\n---\n", encoding="utf-8")
+        (audit / "findings" / "CF-0001-c.md").write_text("---\nid: CF-0001\nstatus: accepted\nmembers: [F-0001, F-0002]\n---\n", encoding="utf-8")
+        b = _io2.StringIO()
+        with _cl2.redirect_stdout(b):
+            cmd_metrics(Path(td))
+        with_members = "class findings: 1 (CF-0001), total members: 2" in b.getvalue()
+        empty = _metrics_out([("F-0001", "closed", "—")])
+        no_members = "class findings: 0 (none), total members: 0" in empty
+        ok = with_members and no_members
+        print(f"{'PASS' if ok else 'FAIL'}: metrics report class-member totals (F-0017)" + ("" if ok else f" -> members={with_members} empty={no_members}"))
+        failed += 0 if ok else 1
+
+    total = len(cases) + 38
+    print(f"\n{'PASS' if failed == 0 else 'FAIL'} ({total - failed}/{total})")
+    return 1 if failed else 0
+
+
+# ---------------------------------------------------------------- lint / metrics
+
+
+def load_findings(audit_dir: Path):
+    """Parse frontmatter of every findings/*.md -> {id: {field: value}}."""
+    out = {}
+    fdir = audit_dir / "findings"
+    if not fdir.is_dir():
+        return out
+    for f in sorted(fdir.glob("*.md")):
+        text = f.read_text(encoding="utf-8", errors="replace")
+        m = re.match(r"^---\n(.*?)\n---", text, re.S)
+        if not m:
+            continue
+        fm = {}
+        for line in m.group(1).splitlines():
+            if ":" in line:
+                k, _, v = line.partition(":")
+                fm[k.strip()] = v.split("#")[0].strip()
+        fid = fm.get("id")
+        if fid:
+            fm["_file"] = f.name
+            out[fid] = fm
+    return out
+
+
+def load_finding_files(audit_dir: Path):
+    """Every findings/*.md with its own frontmatter, WITHOUT collapsing by id.
+
+    `load_findings` returns {id: fm}, so two files sharing an id or a file whose
+    name prefix disagrees with its frontmatter id both vanish into one entry —
+    hiding exactly the `<id>-*.md` one-file-one-finding contract lint must check
+    (F-0013). This preserves one dict per physical file (each with `_file`)."""
+    out = []
+    fdir = audit_dir / "findings"
+    if not fdir.is_dir():
+        return out
+    for f in sorted(fdir.glob("*.md")):
+        text = f.read_text(encoding="utf-8", errors="replace")
+        m = re.match(r"^---\n(.*?)\n---", text, re.S)
+        if not m:
+            # A findings/*.md with NO frontmatter block still exists on disk and
+            # must not vanish before the orphan/id checks (F-0013): record it as
+            # malformed so lint reports it instead of silently skipping.
+            out.append({"_file": f.name, "_malformed": True})
+            continue
+        fm = {}
+        for line in m.group(1).splitlines():
+            if ":" in line:
+                k, _, v = line.partition(":")
+                fm[k.strip()] = v.split("#")[0].strip()
+        fm["_file"] = f.name
+        out.append(fm)
+    return out
+
+
+FNAME_ID_RE = re.compile(r"^((?:F|CF)-\d{4})-")
+CANONICAL_NEXT = {"Planner", "Auditor", "Triage", "Remediator", "Verifier", "human", "—", "-"}
+NEEDS_HUMAN_NEXT_RE = re.compile(r"^(?:human\s+)?⚠ needs-human$")
+
+TERMINAL_OR_DEFERRED = TERMINAL | {"deferred"}
+
+
+def cmd_lint(project: Path):
+    """Read-only ledger<->finding-file consistency check (B2). Exit 1 on issues."""
+    audit = project / "audit"
+    if not (audit / "LEDGER.md").is_file():
+        # A missing ledger is not "clean" — the consistency check has no input
+        # (F-0004).
+        print("xcheck lint: audit/LEDGER.md not found — nothing to check")
+        return 1
+    rows = {r["id"]: r for r in parse_ledger(audit)}
+    fnd = load_findings(audit)
+    issues = []
+
+    # F-0004: table lines that don't parse as a row are silently dropped by the
+    # ledger parser; surface them instead of reporting a false 'clean'.
+    for ml in ledger_malformed_rows(audit):
+        issues.append(f"malformed ledger line (not a valid finding row): {ml!r}")
+
+    for fid, r in rows.items():
+        fm = fnd.get(fid)
+        if fm is None:
+            issues.append(f"{fid}: ledger row has no findings/ file")
+            continue
+        fstatus = fm.get("status", "")
+        # ledger vs frontmatter: equal, or a legal pending-triage delta (§2 rule 3)
+        if r["status"] != fstatus:
+            # §2 rule 3 names TWO legal pending-triage deltas the ledger may lead
+            # the file on: the ordinary `reported → accepted/rejected/deferred`,
+            # AND member reversion `superseded-by-class → accepted` when the human
+            # rejects the CF (§5, §8 rule 4). Modelling only the first flags the
+            # normative pre-sync reversion state as an error (F-0012).
+            # The superseded-by-class → accepted delta is legal ONLY when the
+            # member's class CF is itself rejected (§8 rule 4 reversion). For a
+            # LIVE (non-rejected) CF a member showing accepted-in-ledger is
+            # lifecycle corruption, not a pending-triage delta (F-0012).
+            member_cf = re.search(r"CF-\d{4}", fm.get("class", "") or "")
+            cf_rejected = bool(member_cf) and fnd.get(member_cf.group(0), {}).get("status") == "rejected"
+            triage_delta = (
+                (fstatus == "reported" and r["status"] in TRIAGE_STATUSES)
+                or (fstatus == "superseded-by-class" and r["status"] == "accepted" and cf_rejected)
+            )
+            if not triage_delta:
+                issues.append(f"{fid}: ledger status '{r['status']}' != frontmatter '{fstatus}' (not a pending-triage delta)")
+        nxt = r["next"]
+        # F-0014: `next` is a fixed vocabulary, not "anything containing
+        # needs-human". Accept only an exact canonical token or the normative
+        # `⚠ needs-human` form (optionally prefixed by `human `); an empty cell
+        # or trailing/leading garbage is a corrupted control field.
+        if nxt not in CANONICAL_NEXT and not NEEDS_HUMAN_NEXT_RE.match(nxt or ""):
+            issues.append(f"{fid}: non-canonical next '{nxt}'")
+
+    # F-0013: enforce the <id>-*.md one-file-one-finding contract on the raw
+    # files (load_findings collapses them by id, so it cannot see a mismatch or
+    # a duplicate). Filename prefix must equal frontmatter id; ids must be unique.
+    files = load_finding_files(audit)
+    id_counts = {}
+    for fm in files:
+        fname = fm["_file"]
+        if fm.get("_malformed"):
+            issues.append(f"{fname}: finding file has no frontmatter block (--- ... ---); invisible to id/orphan checks (F-0013)")
+            continue
+        ffid = fm.get("id")
+        pm = FNAME_ID_RE.match(fname)
+        # A finding file with frontmatter but no `id` cannot be matched to a
+        # ledger row, cannot take part in the uniqueness check, and violates the
+        # canonical record (XCHECK.md §2: `id:` is mandatory) — it would slip
+        # through counted-but-unchecked (F-0013 adversarial: an id-less file
+        # reported a false 'clean' as an orphan-invisible extra).
+        if not ffid:
+            issues.append(f"{fname}: finding file has no 'id' in frontmatter (XCHECK.md §2 canonical record; cannot match a ledger row)")
+        if not pm:
+            issues.append(f"{fname}: filename does not start with an <id>- prefix (F-NNNN / CF-NNNN)")
+        elif ffid and pm.group(1) != ffid:
+            issues.append(f"{fname}: filename id {pm.group(1)} != frontmatter id '{ffid}'")
+        if ffid:
+            id_counts[ffid] = id_counts.get(ffid, 0) + 1
+    for dfid, c in sorted(id_counts.items()):
+        if c > 1:
+            issues.append(f"{dfid}: {c} finding files share this id (exactly one <id>-*.md required)")
+
+    for fid in fnd:
+        if fid not in rows:
+            issues.append(f"{fid}: findings/ file has no ledger row (orphan)")
+
+    # class-membership integrity
+    for fid, fm in fnd.items():
+        if fid.startswith("CF-"):
+            # F-0012: a member's legal status depends on the CF's own status. A
+            # LIVE CF absorbs members into superseded-by-class (later closed). A
+            # REJECTED CF reverts members to accepted for point fixes (§8 rule 4,
+            # §5 superseded-by-class → accepted) — that reverted 'accepted' is
+            # the normative post-rejection state, not a lint error.
+            cf_rejected = fm.get("status") == "rejected"
+            allowed = ("superseded-by-class", "closed") + (("accepted",) if cf_rejected else ())
+            members = re.findall(r"F-\d{4}", fm.get("members", ""))
+            for mid in members:
+                if mid not in fnd:
+                    issues.append(f"{fid}: member {mid} does not exist")
+                elif fnd[mid].get("status") not in allowed:
+                    issues.append(f"{fid}: member {mid} status '{fnd[mid].get('status')}' not {'/'.join(allowed)}")
+        cls = fm.get("class", "")
+        if fm.get("status") == "superseded-by-class":
+            cf = re.search(r"CF-\d{4}", cls or "")
+            if not cf:
+                issues.append(f"{fid}: superseded-by-class but no class: CF-xxxx in frontmatter")
+            elif cf.group(0) not in fnd:
+                issues.append(f"{fid}: class {cf.group(0)} does not exist")
+            elif fid not in re.findall(r"F-\d{4}", fnd[cf.group(0)].get("members", "")):
+                issues.append(f"{fid}: not listed in {cf.group(0)} members")
+
+    if issues:
+        print(f"xcheck lint: {len(issues)} issue(s)")
+        for it in issues:
+            print(f"  ✗ {it}")
+        return 1
+    print(f"xcheck lint: clean ({len(rows)} rows, {len(files)} finding files)")
+    return 0
+
+
+def cmd_metrics(project: Path):
+    """Read-only spec §11 metrics from ledger + finding frontmatter (B3)."""
+    audit = project / "audit"
+    # F-0005: KPIs must reflect the source of truth (finding files for non-triage
+    # statuses), not a stale derived ledger. Reconcile before counting.
+    raw = {r["id"]: r["status"] for r in parse_ledger(audit)}
+    rows, fnd = effective_rows(audit)
+    drift = [r["id"] for r in rows if raw.get(r["id"]) != r["status"]]
+    if drift:
+        print(f"note: {len(drift)} LEDGER row(s) out of sync with finding files — "
+              f"KPIs computed from frontmatter (§9.4): {', '.join(sorted(drift))}")
+    total = len(rows)
+    by_status, by_dim, by_sev = {}, {}, {}
+    attempts_hist = {}
+    for r in rows:
+        by_status[r["status"]] = by_status.get(r["status"], 0) + 1
+        by_sev[r["severity"]] = by_sev.get(r["severity"], 0) + 1
+        fm = fnd.get(r["id"], {})
+        d = fm.get("dimension", "?")
+        by_dim[d] = by_dim.get(d, 0) + 1
+        a = fm.get("attempts", "0")
+        attempts_hist[a] = attempts_hist.get(a, 0) + 1
+
+    # auditor accuracy (F-0015): % of findings that actually REACHED validation
+    # which survived it. The denominator is only findings past validation — the
+    # post-validation states (validated/planned/fixed/closed/reopened) plus the
+    # ones validation killed (disputed/obsolete). 'accepted' is pre-validation,
+    # 'rejected'/'deferred' never reached validation, 'reported' was never
+    # triaged; none of them belong in the denominator (they used to inflate it).
+    # 'superseded-by-class' is not an individual validation verdict — excluded.
+    VALIDATION_SURVIVED = ("validated", "planned", "fixed", "closed", "reopened")
+    VALIDATION_KILLED = ("disputed", "obsolete")
+    validated_pool = [r for r in rows if r["status"] in VALIDATION_SURVIVED or r["status"] in VALIDATION_KILLED]
+    survived = [r for r in validated_pool if r["status"] in VALIDATION_SURVIVED]
+    acc = (100 * len(survived) / len(validated_pool)) if validated_pool else None
+    # fix durability (F-0016): of findings that reached a Verifier VERDICT
+    # (closed | reopened — 'superseded-by-class' is not a verdict on the fix),
+    # the share CLOSED on the first pass (closed AND attempts 0). 'reopened' is a
+    # failed verdict, never a first-pass success; a nonzero attempts closed is
+    # not first-pass either.
+    reached = [r for r in rows if r["status"] in ("closed", "reopened")]
+    first_pass = [r for r in reached if r["status"] == "closed"
+                  and fnd.get(r["id"], {}).get("attempts", "0") == "0"]
+    dur = (100 * len(first_pass) / len(reached)) if reached else None
+    passes_done = len(parse_queue(audit)[1])
+    missing_cov = passes_without_coverage(audit)  # F-0011
+    cfs = [fid for fid in fnd if fid.startswith("CF-")]
+    cf_members = sum(len(re.findall(r"F-\d{4}", fnd[cf].get("members", ""))) for cf in cfs)  # F-0017
+
+    def _pct(v):
+        return f"{v:.1f}%" if v is not None else "n/a (no findings reached this stage)"
+
+    print(f"project: {project}")
+    print(f"passes done: {passes_done}")
+    # F-0011: a bare 'passes done' count hides checked passes with no coverage
+    # report; surface the silent gap explicitly.
+    print(f"passes without coverage report: {len(missing_cov)}"
+          + (f" ({', '.join(missing_cov)})" if missing_cov else ""))
+    print(f"findings: {total} total")
+    print("  by status:    " + ", ".join(f"{k}:{v}" for k, v in sorted(by_status.items())))
+    print("  by severity:  " + ", ".join(f"{k}:{v}" for k, v in sorted(by_sev.items())))
+    print("  by dimension: " + ", ".join(f"{k}:{v}" for k, v in sorted(by_dim.items())))
+    print(f"class findings: {len(cfs)} ({', '.join(cfs) or 'none'}), total members: {cf_members}")
+    print(f"attempts distribution: " + ", ".join(f"{k}x:{v}" for k, v in sorted(attempts_hist.items())))
+    print(f"auditor accuracy (survived validation): {_pct(acc)}  (target >80)")
+    print(f"fix durability (closed first pass):      {_pct(dur)}  (target >90)")
+
+
+# ---------------------------------------------------------------- main
+
+
+def main(argv):
+    args = list(argv[1:])
+    if not args or args[0] in ("-h", "--help"):
+        print(__doc__)
+        return 0
+    if args[0] == "selftest":
+        # F-0019: reject a trailing tail so a typo/glued token can't ride
+        # along and still report PASS with exit 0.
+        if len(args) > 1:
+            raise SystemExit(f"selftest takes no arguments (got: {' '.join(args[1:])})")
+        return selftest()
+
+    project = Path.cwd()
+    dry_run = False
+    step = False
+    max_sessions = None
+    budget = None
+    force = False
+    cmd = None
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if a == "--project":
+            i += 1
+            project = Path(args[i]).resolve()
+        elif a == "--dry-run":
+            dry_run = True
+        elif a == "--step":
+            step = True
+        elif a == "--max-sessions":
+            i += 1
+            max_sessions = int(args[i])
+        elif a == "--budget":
+            i += 1
+            budget = float(args[i])
+        elif a == "--force":
+            force = True
+        elif a in ("next", "loop", "status", "unlock", "lint", "metrics"):
+            # F-0019: a second command word must not silently overwrite the
+            # first — the declared grammar is one command per invocation.
+            if cmd is not None:
+                raise SystemExit(f"multiple commands: {cmd!r} and {a!r} (only one allowed)")
+            cmd = a
+        else:
+            raise SystemExit(f"unknown arg: {a} (see --help)")
+        i += 1
+
+    audit = project / "audit"
+    if cmd != "unlock" and not (audit / "XCHECK.md").is_file():
+        raise SystemExit(f"{audit}/XCHECK.md not found — install xcheck first (bootstrap.md)")
+    # F-0009: do NOT persist the default orchestrator.conf here — that write
+    # must live inside cmd_next's lock, or a concurrent `next` aborting on a
+    # live foreign lock still writes it (a write outside the critical section,
+    # violating §4's one-writer serialization). Load for the decision only.
+    conf = load_conf(audit) if cmd != "unlock" else {}
+    # F-0018: max_sessions is consumed ONLY by `loop`. Resolving it here, before
+    # dispatch, made every read-only command (status/lint/metrics) crash with a
+    # raw traceback on a malformed orchestrator.conf value. Defer the conf-derived
+    # coercion into the loop branch and turn a bad value into an addressed error.
+
+    if cmd == "status":
+        cmd_status(project, conf)
+    elif cmd == "next":
+        cmd_next(project, conf, dry_run)
+    elif cmd == "loop":
+        if max_sessions is None:
+            raw = conf.get("max_sessions", "20") or "20"
+            try:
+                max_sessions = int(raw)
+            except ValueError:
+                raise SystemExit(f"orchestrator.conf: max_sessions must be an integer, got {raw!r}")
+        cmd_loop(project, conf, dry_run, step, max_sessions, budget)
+    elif cmd == "unlock":
+        cmd_unlock(project, force)
+    elif cmd == "lint":
+        return cmd_lint(project)
+    elif cmd == "metrics":
+        cmd_metrics(project)
+    else:
+        raise SystemExit("no command (next|loop|status|unlock|lint|metrics|selftest)")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))
