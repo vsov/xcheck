@@ -1,0 +1,36 @@
+{
+  "name": "xcheck",
+  "version": "0.4.0",
+  "description": "Cross-agent audit and remediation methodology for large code and text projects.",
+  "author": {
+    "name": "Viktor Sovietov",
+    "url": "https://github.com/vsov"
+  },
+  "homepage": "https://github.com/vsov/xcheck",
+  "repository": "https://github.com/vsov/xcheck",
+  "license": "MIT",
+  "keywords": [
+    "audit",
+    "code-review",
+    "remediation",
+    "cross-agent",
+    "methodology",
+    "orchestration"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "xcheck",
+    "shortDescription": "Cross-agent audits with evidence and human gates.",
+    "longDescription": "Plan, audit, triage, remediate, and independently verify large projects through a durable findings ledger.",
+    "developerName": "Viktor Sovietov",
+    "category": "Developer Tools",
+    "capabilities": [
+      "Read",
+      "Write"
+    ],
+    "defaultPrompt": [
+      "Use $xcheck-plan to prepare an audit of this project.",
+      "Use $xcheck-status to show the current audit state."
+    ]
+  }
+}

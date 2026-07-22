@@ -2,29 +2,29 @@
 
 Thin per-CLI wrappers over the methodology. They contain **zero normative content** — each one only (1) checks that `audit/XCHECK.md` is installed in the current project, (2) auto-picks the next charter from the pass queue / ledger, (3) starts the role exactly per `audit/XCHECK.md`. The methodology stays in the audited project; launchers are ergonomics.
 
-Six launchers per platform, same names everywhere:
+Six launchers per platform, with Codex skill syntax and slash-command syntax elsewhere:
 
-| Command | Role | Auto-picked charter |
-|---|---|---|
-| `/xcheck-plan` | Planner | fill `audit/AUDIT.md` (stops if the pass queue already exists) |
-| `/xcheck-audit` | Auditor | first unchecked pass in the queue (arg: pass id, or `disputed`) |
-| `/xcheck-triage` | Triage (dialogue) | all `reported` rows; agent is the pen, human is the decider |
-| `/xcheck-remediate` | Remediator | accepted CF, else next ≤ batch-size accepted findings (arg: range / CF id) |
-| `/xcheck-verify` | Verifier | everything in status `fixed`; refuses to judge its own fixes |
-| `/xcheck-status` | — (read-only) | dashboard: queue progress, statuses, whose turn, termination check |
+| Codex | Claude Code / OpenCode | Role | Auto-picked charter |
+|---|---|---|---|
+| `$xcheck-plan` | `/xcheck-plan` | Planner | fill `audit/AUDIT.md` (stops if the pass queue already exists) |
+| `$xcheck-audit` | `/xcheck-audit` | Auditor | first unchecked pass in the queue (optional pass id, or `disputed`) |
+| `$xcheck-triage` | `/xcheck-triage` | Triage (dialogue) | all `reported` rows; agent is the pen, human is the decider |
+| `$xcheck-remediate` | `/xcheck-remediate` | Remediator | accepted CF, else next ≤ batch-size accepted findings |
+| `$xcheck-verify` | `/xcheck-verify` | Verifier | everything in status `fixed`; refuses to judge its own fixes |
+| `$xcheck-status` | `/xcheck-status` | — (read-only) | dashboard: queue progress, statuses, whose turn, termination check |
 
 ## Install
 
 ```sh
 ./install-launchers.sh          # all three CLIs
 ./install-launchers.sh claude   # ~/.claude/skills/xcheck-*/SKILL.md
-./install-launchers.sh codex    # ~/.codex/prompts/xcheck-*.md
+./install-launchers.sh codex    # ~/.agents/skills/xcheck-*/SKILL.md
 ./install-launchers.sh opencode # ~/.config/opencode/command/xcheck-*.md
 ./install-launchers.sh orchestrator # symlink ~/.local/bin/xcheck
-./install-launchers.sh plugin       # assemble repo-root Claude plugin (skills/ + .claude-plugin/plugin.json)
+./install-launchers.sh plugin       # check skills/ and both plugin manifests
 ```
 
-Idempotent; re-run after updating the xcheck repo to refresh launchers. Uninstall = delete the copied files.
+Idempotent; re-run after updating the xcheck repo to refresh launchers. The Codex target removes the six legacy xcheck custom prompts from `~/.codex/prompts/` during migration. Uninstall = delete the copied skill or command files.
 
 ## Cross-agent discipline
 

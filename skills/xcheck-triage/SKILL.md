@@ -1,6 +1,6 @@
 ---
 name: xcheck-triage
-description: Run xcheck triage as a dialogue - present reported findings, record the human's accept/reject/defer decisions in the ledger. Use when the user says /xcheck-triage, "triage", "let's go through the findings". The agent is the pen; the human is the decider.
+description: Run xcheck triage as a dialogue - present reported findings and record the human's accept/reject/defer decisions in the ledger. Use when the user invokes $xcheck-triage or /xcheck-triage, or says "triage" or "let's go through the findings". The agent is the pen; the human is the decider.
 ---
 
 # xcheck launcher — Triage (dialogue mode)
@@ -14,7 +14,7 @@ You are the **pen, not the decider** (XCHECK.md §3 Triage, Agent-as-pen rule). 
 4. **Present** compactly in the human's language, grouped by severity then dimension: id, title, unit, and a one-line gist of the evidence (open finding files to quote — reading is allowed; you WRITE only the ledger). CF rows get their own presentation: pattern, census size, strategy rung, member ids.
 5. **Collect decisions conversationally.** Batch statements apply exactly as stated ("all critical accepted" = accepted for those rows and nothing else). Ambiguous statement → ask; unstated → row stays `reported`. You may give an opinion when asked, clearly labeled as opinion; the recorded status is only what the human states.
 6. **Write** to `audit/LEDGER.md` only, and only the **status** column of affected rows, per stated decisions (§3 Triage write surface: status column only). A rejected CF also reverts every finding in its `members:` list to `accepted`. Do NOT write the `next` column or any other column — the `next` index is derived later by agent/orchestrator sessions, not by triage. Never touch finding files — agent sessions sync frontmatter later per §2 rule 3.
-7. **Close** with a written summary: rows changed (id → status), rows left undecided, and the suggested next step (e.g. "N accepted → /xcheck-remediate").
+7. **Close** with a written summary: rows changed (id → status), rows left undecided, and the suggested next launcher (e.g. `xcheck-remediate` when findings were accepted).
 
 ## Lock discipline
 

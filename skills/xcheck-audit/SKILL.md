@@ -1,10 +1,15 @@
+---
+name: xcheck-audit
+description: Launch an xcheck Auditor session - run the next queued audit pass and file evidence-backed findings. Use when the user invokes $xcheck-audit or /xcheck-audit, says "run a pass" or "audit pass", optionally with a pass id (e.g. P-03).
+---
+
 # xcheck launcher — Auditor
 
 Thin launcher. The methodology lives in `audit/XCHECK.md`; this file only picks the charter and starts the role.
 
-1. **Preflight.** `audit/XCHECK.md` and `audit/AUDIT.md` must exist. Missing → stop, point to xcheck `bootstrap.md`; AUDIT.md empty → suggest `/xcheck-plan`.
-2. Read `audit/XCHECK.md` fully. Your role: **Auditor** (§3 role card governs you).
-3. **Charter auto-pick:** the first unchecked pass in the `audit/AUDIT.md` pass queue. A user-supplied argument overrides: a pass id, or a dispute charter. A bare "disputed" is NOT a charter (§4 rule 1 needs an exact scope): resolve it to the explicit list of finding IDs currently in status `disputed`, announce that list, and give each named finding exactly one written round of objection (§3 Auditor mission); if none are `disputed`, report and stop. All passes checked and no argument → report the queue is empty and suggest `/xcheck-status` or triage.
+1. **Preflight.** `audit/XCHECK.md` and `audit/AUDIT.md` must exist. Missing → stop, point to xcheck `bootstrap.md`; AUDIT.md empty → suggest the `xcheck-plan` launcher.
+2. Read `audit/XCHECK.md` fully. Your role: **Auditor** (§3 role card governs you). Note: the default agent for this role is Codex; running it in Claude is legitimate — any capable agent may play any role.
+3. **Charter auto-pick:** the first unchecked pass in the `audit/AUDIT.md` pass queue. A user-supplied argument overrides: a pass id, or a dispute charter. A bare "disputed" is NOT a charter (§4 rule 1 needs an exact scope): resolve it to the explicit list of finding IDs currently in status `disputed`, announce that list, and give each named finding exactly one written round of objection (§3 Auditor mission); if none are `disputed`, report and stop. All passes checked and no argument → report the queue is empty and suggest the `xcheck-status` or `xcheck-triage` launcher.
 4. Announce the charter in one line (pass id, dimension, units, stop conditions), then execute the role exactly per XCHECK.md: copy `audit/templates/pass.md` to start the pass report, `audit/templates/finding.md` per finding, respect `max_findings_per_pass`, write the mandatory coverage report, tick the pass checkbox, add ledger rows.
 5. Stop conditions are sacred (§4). Findings in the operator's working language; quotes verbatim in the material's language.
 

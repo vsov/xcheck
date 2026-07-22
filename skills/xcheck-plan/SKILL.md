@@ -1,10 +1,15 @@
+---
+name: xcheck-plan
+description: Launch an xcheck Planner session - inventory the project and produce audit/AUDIT.md. Use when the user invokes $xcheck-plan or /xcheck-plan, says "plan the audit" or "fill AUDIT.md", or wants to start an xcheck audit in a project that has audit/XCHECK.md installed.
+---
+
 # xcheck launcher — Planner
 
 Thin launcher. The methodology lives in `audit/XCHECK.md`; this file only picks the charter and starts the role. It adds nothing normative.
 
 1. **Preflight.** `audit/XCHECK.md` must exist in the current project. Missing → stop and tell the user to install xcheck first (xcheck repo `bootstrap.md` / `install.sh`).
 2. Read `audit/XCHECK.md` fully. Your role: **Planner** (§3 role card governs you — mission, reads, writes, stop conditions, forbidden actions).
-3. **Charter auto-pick:** planning is done only if `audit/AUDIT.md` is a complete plan per the Planner stop condition (§3): at least one dimension backed by a norm source, a unit map, AND a non-empty pass queue — then report that and stop (suggest `/xcheck-status`). A partial or malformed AUDIT.md (e.g. a pass queue but no norm-backed dimension or no unit map) is NOT done: continue planning to fill the missing parts, or stop with an exact list of what is missing. Otherwise your charter is: inventory this project and its norms; fill `audit/AUDIT.md` (dimensions with norm sources, unit map, pass queue, limits). A user-supplied argument overrides this charter.
+3. **Charter auto-pick:** planning is done only if `audit/AUDIT.md` is a complete plan per the Planner stop condition (§3): at least one dimension backed by a norm source, a unit map, AND a non-empty pass queue — then report that and stop (suggest the `xcheck-status` launcher). A partial or malformed AUDIT.md (e.g. a pass queue but no norm-backed dimension or no unit map) is NOT done: continue planning to fill the missing parts, or stop with an exact list of what is missing. Otherwise your charter is: inventory this project and its norms; fill `audit/AUDIT.md` (dimensions with norm sources, unit map, pass queue, limits). A user-supplied argument overrides this charter.
 4. Announce the charter in one line, then execute the role exactly per XCHECK.md.
 5. Converse with the human in their language; artifact content follows the XCHECK.md language rule.
 

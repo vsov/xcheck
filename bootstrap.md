@@ -85,7 +85,7 @@ Charter: respond to disputed findings (see LEDGER).`
 
 ## 5. Launchers (optional)
 
-Instead of pasting one-liners by hand, install the thin CLI wrappers — `/xcheck-plan`, `/xcheck-audit`, `/xcheck-triage`, `/xcheck-remediate`, `/xcheck-verify`, `/xcheck-status` — for Claude Code, Codex, and OpenCode: see `launchers/README.md` (`launchers/install-launchers.sh`). They auto-pick the next charter and contain no methodology content.
+Instead of pasting one-liners by hand, install the thin launchers — `$xcheck-plan`, `$xcheck-audit`, `$xcheck-triage`, `$xcheck-remediate`, `$xcheck-verify`, `$xcheck-status` in Codex, or the corresponding `/xcheck-*` commands in Claude Code and OpenCode. See `launchers/README.md` (`launchers/install-launchers.sh`). They auto-pick the next charter and contain no methodology content.
 
 ## 6. Field notes (pilot-tested)
 

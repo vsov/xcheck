@@ -22,7 +22,7 @@ Repository: **github.com/vsov/xcheck** · License: MIT · Orchestrator: Python 3
 4. [Repository layout](#4-repository-layout)
 5. [Installation](#5-installation)
 6. [Quickstart: your first audit](#6-quickstart-your-first-audit)
-7. [Launchers: slash commands for Claude Code, Codex, OpenCode](#7-launchers-slash-commands-for-claude-code-codex-opencode)
+7. [Launchers: skills for Codex and Claude Code, commands for OpenCode](#7-launchers-skills-for-codex-and-claude-code-commands-for-opencode)
 8. [The orchestrator](#8-the-orchestrator)
 9. [Agent mapping and cross-agent discipline](#9-agent-mapping-and-cross-agent-discipline)
 10. [The audit/ directory in your project](#10-the-audit-directory-in-your-project)
@@ -94,10 +94,11 @@ During triage the agent is the pen, not the decider: it presents findings, recor
 | `XCHECK.md` | The methodology core. The **only** normative document agents read. Installed into each audited project. |
 | `bin/xcheck` | The orchestrator (Python 3, stdlib). Drives sessions between human gates. Includes a 54-test selftest. |
 | `templates/` | Artifact skeletons: `finding.md`, `class-finding.md`, `pass.md`, `plan.md`, plus `AUDIT-text.md` / `AUDIT-code.md` starting points. |
-| `launchers/` | Thin slash-command wrappers for Claude Code, Codex, and OpenCode + `install-launchers.sh`. Zero normative content. |
+| `skills/` | Shared launcher skills used by Codex, Claude Code, and both plugin manifests. Zero normative content. |
+| `launchers/` | Per-CLI installer plus OpenCode command wrappers. |
 | `bootstrap.md` | From zero to a running cycle: install block, session one-liners, the full cycle step by step. |
 | `install.sh` | One-command install of the methodology into a target project. |
-| `.claude-plugin/` | Claude Code plugin manifest (the `skills/` payload is assembled by `install-launchers.sh plugin`). |
+| `.claude-plugin/`, `.codex-plugin/` | Claude Code and Codex plugin manifests over the checked-in `skills/` payload. |
 
 ## 5. Installation
 
@@ -130,14 +131,14 @@ From the xcheck repo:
 cd launchers
 ./install-launchers.sh            # all three CLIs
 ./install-launchers.sh claude     # → ~/.claude/skills/xcheck-*/SKILL.md
-./install-launchers.sh codex      # → ~/.codex/prompts/xcheck-*.md
+./install-launchers.sh codex      # → ~/.agents/skills/xcheck-*/SKILL.md
 ./install-launchers.sh opencode   # → ~/.config/opencode/command/xcheck-*.md
 ./install-launchers.sh orchestrator  # → symlink ~/.local/bin/xcheck
 ```
 
 Idempotent; re-run after updating the repo. Uninstall = delete the copied files.
 
-**Claude Code, plugin route (alternative):** `./install-launchers.sh plugin` assembles the repo-root `skills/` directory next to `.claude-plugin/plugin.json`, making the repo installable as a Claude Code plugin (via `/plugin` marketplace flows or by copying the repo).
+The checked-in `skills/` directory is also the payload for `.claude-plugin/plugin.json` and `.codex-plugin/plugin.json`. `./install-launchers.sh plugin` checks that both manifests and all six skills are present; a marketplace can package the repository directly without a generated payload. Re-running the Codex installer removes the six legacy xcheck files from `~/.codex/prompts/`.
 
 ### 5.4 Verify the toolchain
 
@@ -147,7 +148,7 @@ python3 bin/xcheck selftest    # expect: PASS (54/54)
 
 ## 6. Quickstart: your first audit
 
-Two ways to run the cycle: **manual** (you paste one-liners or slash commands per session) and **orchestrated** (`xcheck loop` runs sessions for you and stops at your gates). Both use the same files and rules; you can switch freely mid-audit.
+Two ways to run the cycle: **manual** (you paste one-liners or invoke launcher skills/commands per session) and **orchestrated** (`xcheck loop` runs sessions for you and stops at your gates). Both use the same files and rules; you can switch freely mid-audit.
 
 A dry run first is worth 15 minutes: install `audit/` into a throwaway directory and walk one invented finding through every status by hand, including creating and rejecting a class finding. You will learn the mechanics and vocabulary before agents enter the loop.
 
@@ -155,7 +156,8 @@ A dry run first is worth 15 minutes: install `audit/` into a throwaway directory
 
 Open a session of your planning agent **in the audited project root** and run:
 
-- Claude Code / Codex / OpenCode with launchers: `/xcheck-plan`
+- Codex with skills: `$xcheck-plan`
+- Claude Code / OpenCode with launchers: `/xcheck-plan`
 - Any CLI, by hand:
 
   ```
@@ -170,7 +172,8 @@ The session catalogs the project's norms (style contracts, specs, ADRs, glossari
 
 One session per pass, in queue order:
 
-- With launchers: `/xcheck-audit` (auto-picks the first unchecked pass; `/xcheck-audit P-03` overrides)
+- Codex: `$xcheck-audit` (auto-picks the first unchecked pass; ask it to run `P-03` to override)
+- Claude Code / OpenCode: `/xcheck-audit` (`/xcheck-audit P-03` overrides)
 - By hand:
 
   ```
@@ -185,14 +188,15 @@ You can run several passes back to back and triage the accumulated pile — tria
 
 ### Step 3 — Triage (your gate)
 
-- With launchers: `/xcheck-triage` — dialogue mode. The agent presents findings in groups (severity × dimension) with quotes; you answer in chat ("accept all critical, reject F-0031, show me CF-0002 in detail"); the agent records exactly what you said into the ledger.
+- Codex: `$xcheck-triage`; Claude Code / OpenCode: `/xcheck-triage`. In dialogue mode, the agent presents findings in groups (severity × dimension) with quotes; you answer in chat ("accept all critical, reject F-0031, show me CF-0002 in detail"); the agent records exactly what you said into the ledger.
 - By hand: open `audit/LEDGER.md` and set each `reported` row's status to `accepted`, `rejected`, or `deferred`. Batch decisions are normal ("all critical and major → accepted" in one sweep). When a title alone doesn't settle it, open the finding file — the quote and reasoning are there.
 
 You write **only the status column of the ledger** — never the finding files. The first agent session that picks a finding up carries your decision into the file (the only sanctioned ledger→file flow; in every other case the finding file is the truth).
 
 ### Step 4 — Remediate
 
-- With launchers: `/xcheck-remediate` (auto-picks: an accepted class finding first, else the next batch of accepted findings; `/xcheck-remediate F-0012..F-0019` or a CF id overrides)
+- Codex: `$xcheck-remediate` (name a finding range or CF id in the request to override the auto-pick)
+- Claude Code / OpenCode: `/xcheck-remediate` (`/xcheck-remediate F-0012..F-0019` or a CF id overrides)
 - By hand:
 
   ```
@@ -213,7 +217,7 @@ If the project uses git, the session commits with finding IDs in the message —
 
 When `fixed` findings have accumulated — a session of a **different** agent (in the cross-agent default this is automatic):
 
-- With launchers: `/xcheck-verify`
+- Codex: `$xcheck-verify`; Claude Code / OpenCode: `/xcheck-verify`
 - By hand:
 
   ```
@@ -228,26 +232,26 @@ Per finding: run its verification procedure, then adversarially inspect the surr
 - `disputed` → one written round of Auditor objection in the finding file, then you decide.
 - Passes left in the queue → back to step 2.
 
-**The audit is complete** when the pass queue is empty and every ledger row is terminal. `/xcheck-status` (or `xcheck status`) runs this termination check for you.
+**The audit is complete** when the pass queue is empty and every ledger row is terminal. `$xcheck-status` in Codex, `/xcheck-status` in Claude Code/OpenCode, or `xcheck status` runs this termination check for you.
 
-## 7. Launchers: slash commands for Claude Code, Codex, OpenCode
+## 7. Launchers: skills for Codex and Claude Code, commands for OpenCode
 
-Six commands, same names on every platform:
+Six launchers, same logical names on every platform:
 
-| Command | Role | Auto-picked charter |
-|---|---|---|
-| `/xcheck-plan` | Planner | fill `audit/AUDIT.md` (stops if a complete plan already exists) |
-| `/xcheck-audit` | Auditor | first unchecked pass (arg: pass id, or `disputed` for a dispute-response session) |
-| `/xcheck-triage` | Triage (dialogue) | all `reported` rows; agent is the pen, human is the decider |
-| `/xcheck-remediate` | Remediator | unfinished work first (reopened / interrupted), else accepted CF, else next batch of accepted findings |
-| `/xcheck-verify` | Verifier | everything in status `fixed`; refuses to judge its own fixes |
-| `/xcheck-status` | — (read-only) | dashboard: queue progress, statuses, whose turn, termination check |
+| Codex | Claude Code / OpenCode | Role | Auto-picked charter |
+|---|---|---|---|
+| `$xcheck-plan` | `/xcheck-plan` | Planner | fill `audit/AUDIT.md` (stops if a complete plan already exists) |
+| `$xcheck-audit` | `/xcheck-audit` | Auditor | first unchecked pass (optional pass id, or `disputed` for a dispute-response session) |
+| `$xcheck-triage` | `/xcheck-triage` | Triage (dialogue) | all `reported` rows; agent is the pen, human is the decider |
+| `$xcheck-remediate` | `/xcheck-remediate` | Remediator | unfinished work first, else accepted CF, else next batch of accepted findings |
+| `$xcheck-verify` | `/xcheck-verify` | Verifier | everything in status `fixed`; refuses to judge its own fixes |
+| `$xcheck-status` | `/xcheck-status` | — (read-only) | dashboard: queue progress, statuses, whose turn, termination check |
 
-Run them in a session opened **in the audited project root**. An argument overrides the auto-pick: `/xcheck-audit P-03`, `/xcheck-remediate F-0012..F-0019`, `/xcheck-remediate CF-0002`.
+Run them in a session opened **in the audited project root**. In Codex, mention the override alongside the skill (for example, `$xcheck-audit for P-03` or `$xcheck-remediate for CF-0002`). Claude Code and OpenCode accept command arguments directly.
 
-The wrappers are deliberately thin: zero methodology content, only "check install → pick charter → play the role per `audit/XCHECK.md`." Updating the methodology never requires updating the launchers (and vice versa). Cross-agent protections are preserved: `/xcheck-verify` demands acknowledgment when verification would land on the same agent that produced the fixes, and all writing launchers honor the `audit/.lock` protocol.
+The wrappers are deliberately thin: zero methodology content, only "check install → pick charter → play the role per `audit/XCHECK.md`." Updating the methodology never requires updating the launchers (and vice versa). Cross-agent protections are preserved: `xcheck-verify` refuses same-agent verification, and all writing launchers honor the `audit/.lock` protocol.
 
-**Codex note:** the launchers install as custom prompts (`~/.codex/prompts/`), invoked the same way (`/xcheck-audit`). For non-interactive use, the orchestrator drives Codex through `codex exec` with the same role charters — see the next section.
+**Codex note:** launchers install as skills in `~/.agents/skills/`. Codex can invoke them explicitly with `$xcheck-*` or implicitly from a matching request. For non-interactive use, the orchestrator drives Codex through `codex exec` with the same role charters — see the next section.
 
 ## 8. The orchestrator
 
