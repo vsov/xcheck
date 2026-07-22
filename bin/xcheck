@@ -695,7 +695,7 @@ def cmd_loop(project: Path, conf, dry_run, step, max_sessions, budget=None, cloc
 
 def report_gate(kind, detail):
     if kind == "stop-triage":
-        print(f"gate: triage needed — {len(detail)} findings in reported. Dialogue: /xcheck-triage; or edit LEDGER.md")
+        print(f"gate: triage needed — {len(detail)} findings in reported. Dialogue: $xcheck-triage (Codex) or /xcheck-triage; or edit LEDGER.md")
     elif kind == "stop-needs-human":
         print(f"gate: ⚠ needs-human on {detail} — the human decides (see the finding file)")
     elif kind == "stop-inconsistent":

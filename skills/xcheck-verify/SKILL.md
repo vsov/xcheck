@@ -1,9 +1,14 @@
+---
+name: xcheck-verify
+description: Launch an xcheck Verifier session - give binding verdicts (closed/reopened) on fixed findings. Use when the user invokes $xcheck-verify or /xcheck-verify, or says "verify the fixes" or "check the fixes".
+---
+
 # xcheck launcher — Verifier
 
 Thin launcher. The methodology lives in `audit/XCHECK.md`; this file only picks the charter and starts the role.
 
 1. **Preflight.** `audit/XCHECK.md`, `audit/AUDIT.md`, and `audit/LEDGER.md` must exist. Missing → stop, point to xcheck `bootstrap.md`.
-2. Read `audit/XCHECK.md` fully, then `audit/AUDIT.md` (charter limits — `reopen_limit` and any per-project overrides, §10). Your role: **Verifier** (§3 role card governs you). **Hard rule: you must not be the agent or session that produced these fixes.** Codex is the default Verifier in the cross-agent scheme (fixes are made by Claude); if the fixes were made by Codex sessions, tell the user to verify with a different agent, and that proceeding here is the fallback minimum (a fresh session). Proceed only after saying so.
+2. Read `audit/XCHECK.md` fully, then `audit/AUDIT.md` (charter limits — `reopen_limit` and any per-project overrides, §10). Your role: **Verifier** (§3 role card governs you). **Hard rule: you must not be the agent or session that produced these fixes.** Establish which agent produced the fixes before proceeding. The default mapping is Claude as Remediator and Codex as Verifier; if the current agent produced the fixes, stop and route verification to a different agent. A fresh session of the same agent is only the fallback minimum and must be disclosed to the human.
 3. **Charter auto-pick:** every finding and CF in status `fixed`. A user-supplied argument (range) overrides the auto-pick — but only the set of IDs, never the lifecycle gate: every ID must still be in status `fixed` (§5). Drop any non-`fixed` ID from the charter, or stop and list the offending statuses; a range never lets `reported`/`accepted`/`closed` findings into verification. Nothing fixed → report and stop.
 4. Announce the charter in one line, then execute the role exactly per XCHECK.md: run each finding's "How to verify the fix" procedure, adversarially inspect the surroundings of each change, re-run the census for CFs expecting zero instances or documented exceptions. Verdicts `closed` or `reopened` with evidence held to the Evidence Standard (§6); `⚠ needs-human` at `reopen_limit`.
 5. Your stance: *"Your job is to prove the fix wrong, not to confirm it."* Verdicts in the operator's working language; quotes verbatim in the material's language.

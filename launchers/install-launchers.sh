@@ -1,28 +1,39 @@
 #!/bin/sh
-# Install xcheck launchers into agent CLIs. Usage: ./install-launchers.sh [claude|codex|opencode|orchestrator|all]
+# Install xcheck launchers into agent CLIs. Usage: ./install-launchers.sh [claude|codex|opencode|orchestrator|plugin|all]
 # Idempotent: re-running overwrites previously installed launchers with the current versions.
 set -e
 cd "$(dirname "$0")"
 target=${1:-all}
+
+install_skills() {
+  destination=$1
+  mkdir -p "$destination"
+  for d in ../skills/*/; do
+    name=$(basename "$d")
+    mkdir -p "$destination/$name"
+    cp "$d/SKILL.md" "$destination/$name/SKILL.md"
+  done
+}
+
+remove_legacy_codex_prompts() {
+  for name in xcheck-plan xcheck-audit xcheck-triage xcheck-remediate xcheck-verify xcheck-status; do
+    rm -f "$HOME/.codex/prompts/$name.md"
+  done
+}
 
 case "$target" in claude|codex|opencode|orchestrator|plugin|all) ;; *)
   echo "usage: $0 [claude|codex|opencode|orchestrator|plugin|all]" >&2; exit 2 ;;
 esac
 
 if [ "$target" = claude ] || [ "$target" = all ]; then
-  mkdir -p "$HOME/.claude/skills"
-  for d in claude/*/; do
-    name=$(basename "$d")
-    mkdir -p "$HOME/.claude/skills/$name"
-    cp "$d/SKILL.md" "$HOME/.claude/skills/$name/SKILL.md"
-  done
+  install_skills "$HOME/.claude/skills"
   echo "claude:   6 skills -> ~/.claude/skills/xcheck-*  (invoke: /xcheck-audit etc.)"
 fi
 
 if [ "$target" = codex ] || [ "$target" = all ]; then
-  mkdir -p "$HOME/.codex/prompts"
-  cp codex/*.md "$HOME/.codex/prompts/"
-  echo "codex:    6 prompts -> ~/.codex/prompts/  (invoke: /xcheck-audit etc.)"
+  install_skills "$HOME/.agents/skills"
+  remove_legacy_codex_prompts
+  echo "codex:    6 skills -> ~/.agents/skills/xcheck-*  (invoke: \$xcheck-audit etc.)"
 fi
 
 if [ "$target" = opencode ] || [ "$target" = all ]; then
@@ -38,14 +49,14 @@ if [ "$target" = orchestrator ] || [ "$target" = all ]; then
 fi
 
 if [ "$target" = plugin ]; then
-  # Assemble the repo-root Claude plugin skills/ from launchers/claude (source of truth),
-  # so `.claude-plugin/plugin.json` + skills/ make xcheck installable via /plugin or a marketplace.
   root=$(cd .. && pwd)
-  rm -rf "$root/skills"
-  for d in claude/*/; do
-    name=$(basename "$d")
-    mkdir -p "$root/skills/$name"
-    cp "$d/SKILL.md" "$root/skills/$name/SKILL.md"
+  [ -f "$root/.claude-plugin/plugin.json" ]
+  [ -f "$root/.codex-plugin/plugin.json" ]
+  count=0
+  for skill in "$root"/skills/*/SKILL.md; do
+    [ -f "$skill" ] || continue
+    count=$((count + 1))
   done
-  echo "plugin: $root/skills/ assembled (6 skills) + .claude-plugin/plugin.json — install via /plugin (marketplace) or copy the repo"
+  [ "$count" = 6 ]
+  echo "plugin: checked-in skills/ + Claude and Codex manifests are present (6 skills)"
 fi
