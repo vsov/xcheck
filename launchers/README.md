@@ -19,12 +19,12 @@ Six launchers per platform, with Codex skill syntax and slash-command syntax els
 ./install-launchers.sh          # all three CLIs
 ./install-launchers.sh claude   # ~/.claude/skills/xcheck-*/SKILL.md
 ./install-launchers.sh codex    # ~/.agents/skills/xcheck-*/SKILL.md
-./install-launchers.sh opencode # ~/.config/opencode/command/xcheck-*.md
+./install-launchers.sh opencode # generated from ../skills/ -> ~/.config/opencode/command/xcheck-*.md
 ./install-launchers.sh orchestrator # symlink ~/.local/bin/xcheck
-./install-launchers.sh plugin       # check skills/ and both plugin manifests
+./install-launchers.sh plugin       # validate skills/ and both plugin manifests (fails loudly if incomplete)
 ```
 
-Idempotent; re-run after updating the xcheck repo to refresh launchers. The Codex target removes the six legacy xcheck custom prompts from `~/.codex/prompts/` during migration. Uninstall = delete the copied skill or command files.
+Idempotent; re-run after updating the xcheck repo to refresh launchers. The Codex target removes the six legacy xcheck custom prompts from `~/.codex/prompts/` during migration. OpenCode commands are generated at install time from the shared `skills/` payload — there is no second checked-in copy to drift. Uninstall = delete the copied skill or command files.
 
 ## Cross-agent discipline
 

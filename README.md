@@ -95,7 +95,7 @@ During triage the agent is the pen, not the decider: it presents findings, recor
 | `bin/xcheck` | The orchestrator (Python 3, stdlib). Drives sessions between human gates. Includes a 54-test selftest. |
 | `templates/` | Artifact skeletons: `finding.md`, `class-finding.md`, `pass.md`, `plan.md`, plus `AUDIT-text.md` / `AUDIT-code.md` starting points. |
 | `skills/` | Shared launcher skills used by Codex, Claude Code, and both plugin manifests. Zero normative content. |
-| `launchers/` | Per-CLI installer plus OpenCode command wrappers. |
+| `launchers/` | Per-CLI installer (`install-launchers.sh`). OpenCode commands are generated from `skills/` at install time. |
 | `bootstrap.md` | From zero to a running cycle: install block, session one-liners, the full cycle step by step. |
 | `install.sh` | One-command install of the methodology into a target project. |
 | `.claude-plugin/`, `.codex-plugin/` | Claude Code and Codex plugin manifests over the checked-in `skills/` payload. |
@@ -132,7 +132,7 @@ cd launchers
 ./install-launchers.sh            # all three CLIs
 ./install-launchers.sh claude     # → ~/.claude/skills/xcheck-*/SKILL.md
 ./install-launchers.sh codex      # → ~/.agents/skills/xcheck-*/SKILL.md
-./install-launchers.sh opencode   # → ~/.config/opencode/command/xcheck-*.md
+./install-launchers.sh opencode   # generated from skills/ → ~/.config/opencode/command/xcheck-*.md
 ./install-launchers.sh orchestrator  # → symlink ~/.local/bin/xcheck
 ```
 
