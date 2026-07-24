@@ -6,10 +6,10 @@ Six launchers per platform, with Codex skill syntax and slash-command syntax els
 
 | Codex | Claude Code / OpenCode | Role | Auto-picked charter |
 |---|---|---|---|
-| `$xcheck-plan` | `/xcheck-plan` | Planner | fill `audit/AUDIT.md` (stops if the pass queue already exists) |
+| `$xcheck-plan` | `/xcheck-plan` | Planner | fill `audit/AUDIT.md` (stops only when it is a complete plan — a norm-backed dimension, a unit map, and a non-empty pass queue, §3; a partial/malformed AUDIT.md is not done) |
 | `$xcheck-audit` | `/xcheck-audit` | Auditor | first unchecked pass in the queue (optional pass id, or `disputed`) |
 | `$xcheck-triage` | `/xcheck-triage` | Triage (dialogue) | all `reported` rows; agent is the pen, human is the decider |
-| `$xcheck-remediate` | `/xcheck-remediate` | Remediator | accepted CF, else next ≤ batch-size accepted findings |
+| `$xcheck-remediate` | `/xcheck-remediate` | Remediator | resume unfinished work first (reopened / left-over validated·planned / open RP, §5), else an accepted CF, else next ≤ batch-size accepted findings |
 | `$xcheck-verify` | `/xcheck-verify` | Verifier | everything in status `fixed`; refuses to judge its own fixes |
 | `$xcheck-status` | `/xcheck-status` | — (read-only) | dashboard: queue progress, statuses, whose turn, termination check |
 

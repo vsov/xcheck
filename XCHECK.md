@@ -1,6 +1,6 @@
 # XCHECK — Cross-Agent Audit & Remediation Methodology
 
-version: 0.1.2
+version: 0.2.0
 
 Self-contained. If you are an agent reading this inside a project's `audit/`
 directory, this file plus `AUDIT.md` plus your charter is everything you need.
@@ -173,7 +173,7 @@ Definitions:
 
 ## 6. Evidence Standard
 
-Evidence is the anti-hallucination mechanism at the center of this methodology. Six rules govern every finding:
+Evidence is the anti-hallucination mechanism at the center of this methodology. Seven rules govern every finding:
 
 1. **The quote is the primary anchor.** Character-exact, findable by a literal search in the material. A line number is a hint, not an anchor — text moves as the material is edited.
 2. **A norm reference is mandatory.** A finding is a discrepancy between the material and a norm: a style contract, a spec, an ADR, a sourced fact, or internal consistency — in which case the contradicting passage is itself quoted as the norm. No norm, no finding: it is an opinion, and its severity is capped at `info`.
@@ -181,6 +181,7 @@ Evidence is the anti-hallucination mechanism at the center of this methodology. 
 4. **A finding without evidence meeting this standard is invalid by construction.** It must not reach Triage.
 5. **Locators follow the material kind.** Code: `file:line` plus the enclosing symbol name. Text: file, section, and the quote itself.
 6. **Auditor-authored sections of a finding are append-only for other roles.** Evidence, Why this is a defect, and How to verify the fix are written once, by the Auditor; other roles may add to them but not rewrite them. The only in-place edit allowed is a locator update (§9 rule 1).
+7. **Absence is anchored to its present twin.** Some defects are the absence of something the material requires — a norm promises an artifact that is missing, or a present element implies a partner that does not exist (`open` with no `close`, a table-of-contents line with no section, a spec clause with no implementing unit, a public symbol with no test). Such a defect has no line of its own to quote. Its anchor is instead the *present* element that generates the expectation, quoted character-exact per rule 1; the norm or pairing rule that makes the twin mandatory (rule 2); and a reproducible search for the twin whose **expected result is empty** — the twin is looked for and not found. Rule 4 is not relaxed by this: an absence with no present anchor to quote — a wish for something the material never promised — is not a reportable finding, and is routed to the Planner as a norm-gap note instead.
 
 ## 7. Validation & Verification
 
@@ -194,16 +195,16 @@ Two checks apply the Evidence Standard at two different points in the cycle.
 
 A finding may be one instance of a systematic defect rather than a one-off. Escalation exists to catch that and fix it globally instead of one instance at a time.
 
-1. **Census is the mandatory second step of remediation**, after validation and before planning. The Remediator formulates the finding's pattern and searches for it across the whole project — not only in the finding's own unit. The search procedure fits the material (a literal-text or pattern search across files; a targeted read across sections where the pattern could recur) and must be recorded precisely enough for someone else to rerun it.
+1. **Census is the mandatory second step of remediation**, after validation and before planning. The Remediator formulates the finding's pattern and searches for it across the whole project — not only in the finding's own unit. The search procedure fits the material (a literal-text or pattern search across files; a targeted read across sections where the pattern could recur) and must be recorded precisely enough for someone else to rerun it. The census inherits the finding's evidence polarity (§6 rule 7): for a presence defect the pattern is the defect itself and the census counts its occurrences; for an absence defect the pattern is the anchor→twin pairing, and the census enumerates every anchor and counts the **orphans** — anchors whose mandatory twin is missing.
 2. **Escalation threshold: `class_threshold` instances (default 3, §10).** Below threshold, fix the instance found and note its siblings in the finding file. At or above threshold, open a class finding.
 3. **A class finding (`CF-NNNN`) contains:** an exact definition of the pattern and its search procedure; a full census of instances with locators, including any the original pass missed; the root cause — most often a norm that is missing, ambiguous, or inconsistently enforced; and a global strategy on an increasing scale:
    - (a) fix every instance;
    - (b) (a), plus fix the norm so the class cannot recur;
    - (c) (b), plus an automated guard where one is possible — a search check, a lint rule, a style script — so the class becomes structurally hard to reintroduce.
 4. **A CF finding passes through the same Triage gate** as any other finding — status `reported`, the human decides. The single human gate does not multiply, but a global change never bypasses it. On creation, every member finding moves to `superseded-by-class` immediately; if the human rejects the CF at triage, members revert to `accepted` for point fixes instead. The Remediator continues the current session with the rest of the batch — the CF waits for the next triage round.
-5. **Class verification is a re-census**, performed by the Verifier: rerun the recorded search procedure and expect zero instances, or explicitly documented exceptions. This is what catches "fixed 12 of 15."
+5. **Class verification is a re-census**, performed by the Verifier: rerun the recorded search procedure and expect the polarity's clean result (§6 rule 7) — for a presence class, zero instances of the defect; for an absence class, zero **orphans**, i.e. every anchor's twin-search now returns its twin — or explicitly documented exceptions. Re-running an absence search and finding zero of the still-missing artifacts is not a pass: the orphan count, not the missing-artifact count, must reach zero. This is what catches "fixed 12 of 15" and its absence twin "created 12 of 15."
 6. **Norm write-back is part of the fix, not a side effect.** Strategies (b) and (c) edit the project's normative documents in the same remediation, not as optional follow-up work. If the project maintains a persistent agent-memory or lessons store, record the norm change there in the same remediation.
-7. **The five-step Remediator sequence maps onto an accepted CF as follows:** validate = re-run the recorded census procedure; census = already done (the CF's census IS the scope); plan = the Global strategy section; fix as usual; self-check = re-run the census procedure expecting zero instances or documented exceptions.
+7. **The five-step Remediator sequence maps onto an accepted CF as follows:** validate = re-run the recorded census procedure; census = already done (the CF's census IS the scope); plan = the Global strategy section; fix as usual; self-check = re-run the census procedure expecting the polarity's clean result (zero instances for a presence class, zero orphans for an absence class) or documented exceptions.
 8. **Norm ratification gate.** If a class fix under strategy (b) or (c) changes a norm, relies on a norm that another normative source contradicts (including machine registries and configuration files), or must pick a side in any conflict between norms — the Remediator stops after writing the plan and routes the conflict to the norm owner through triage before executing. Documenting a norm conflict and proceeding anyway is a protocol violation for class fixes: a class fix in the wrong direction multiplies one error across the whole corpus.
 
 ## 9. Failure Modes

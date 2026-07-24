@@ -49,5 +49,8 @@ updated: YYYY-MM-DD
 <!-- Remediator. What was changed, instance by instance + norm/guard edits. -->
 
 ## Verification
-<!-- Verifier. Re-run the Pattern search procedure. Expected: zero instances,
-     or an explicit documented-exceptions list. "Fixed 12 of 15" = reopened. -->
+<!-- Verifier. Re-run the Pattern search procedure. Expected: the polarity's
+     clean result (§8 rule 5) — zero instances for a presence class, zero
+     orphans (every anchor's twin now present) for an absence class — or an
+     explicit documented-exceptions list. "Fixed 12 of 15" (or "created 12 of
+     15") = reopened. -->

@@ -17,14 +17,24 @@ updated: YYYY-MM-DD
      (2) locator: code — file:line + symbol; text — file + section;
      (3) the norm this material violates, with its own quote
          (style contract / spec / ADR / sourced fact / contradicting passage).
-     No norm → severity at most info. -->
+     No norm → severity at most info.
+     ABSENCE defect (§6 rule 7 — a required twin is missing, so there is no
+     defective line to quote): (1) quote the PRESENT anchor that demands the
+     twin (the norm's promise, or the unpaired element — `open` w/o `close`, TOC
+     line w/o section, spec clause w/o implementing unit); (2) the norm or
+     pairing rule that makes the twin mandatory; (3) the expected twin locator
+     plus a reproducible twin-search whose result is EMPTY. No present anchor to
+     quote → not a finding: route to the Planner as a norm-gap note. -->
 
 ## Why this is a defect
 <!-- Auditor. 1–3 sentences. -->
 
 ## How to verify the fix
 <!-- Auditor, at creation time. A reproducible procedure (search command,
-     section to re-read, check to run) + the expected result. -->
+     section to re-read, check to run) + the expected result. State the result's
+     polarity: a presence defect is fixed when the quote-search no longer finds
+     the defect; an absence defect (§6 rule 7) when the twin-search now RETURNS
+     the once-missing artifact. -->
 
 ## Validation
 <!-- Remediator, step 1. validated / disputed / obsolete + the grounds.

@@ -61,8 +61,12 @@ Planner's charter is fixed and needs no edits. A session handed a one-liner
 with no charter should refuse to start (XCHECK.md §4 rule 1).
 
 An Auditor charter is not only a fresh pass — a dispute round is a valid
-charter too: `Read audit/XCHECK.md and audit/AUDIT.md. Role: Auditor.
-Charter: respond to disputed findings (see LEDGER).`
+charter too, but it still needs an exact scope and stop condition (§4 rule 1):
+name the finding IDs currently in status `disputed` and cap the work at one
+written round of objection each, e.g. `Read audit/XCHECK.md and audit/AUDIT.md.
+Role: Auditor. Charter: dispute round for F-0007, F-0013 — one written round of
+objection each (see LEDGER).` A bare "respond to disputed findings" names no ID,
+range, or stop condition and is not a charter; it must not start a session.
 
 ## 3. A typical cycle
 

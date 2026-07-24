@@ -224,7 +224,7 @@ When `fixed` findings have accumulated — a session of a **different** agent (i
   Read audit/XCHECK.md and audit/AUDIT.md. Role: Verifier. Charter: all findings in status fixed. You did not write these fixes; try to prove them wrong.
   ```
 
-Per finding: run its verification procedure, then adversarially inspect the surroundings of the change for collateral damage. Verdict `closed` or `reopened`, held to the same evidence standard. For a CF the verification is a fresh census: expected zero instances — this catches "fixed 12 of 15."
+Per finding: run its verification procedure, then adversarially inspect the surroundings of the change for collateral damage. Verdict `closed` or `reopened`, held to the same evidence standard. For a CF the verification is a fresh census expecting the polarity's clean result — zero instances for a presence class, zero orphans (every anchor's twin-search now returns its twin) for an absence class — which catches both "fixed 12 of 15" and its absence twin "created 12 of 15."
 
 ### Step 6 — Repeat and finish
 
@@ -347,7 +347,7 @@ A CF goes through **your triage** like any finding — accepting it sanctions a 
 
 **Norm ratification gate:** if a (b)/(c) fix would change a norm, or must pick a side in a conflict between norms, the Remediator stops after writing the plan and routes the conflict to you before executing. A class fix in the wrong direction multiplies one error across the whole corpus — hence the brake.
 
-Verification of a CF re-runs the census expecting zero instances (or an explicit documented-exceptions list). "Fixed 12 of 15" = `reopened`.
+Verification of a CF re-runs the census expecting the polarity's clean result — zero instances for a presence class, zero orphans (every anchor's twin-search now returns its twin) for an absence class — or an explicit documented-exceptions list. "Fixed 12 of 15" (and its absence twin "created 12 of 15") = `reopened`.
 
 ## 12. Configuration reference
 
