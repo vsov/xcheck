@@ -8,7 +8,7 @@ Two AI agents and one human run a cycle:
 audit (agent A) → triage (you) → remediate (agent B) → verify (agent A) → repeat
 ```
 
-until the pass queue is empty and every finding reaches a terminal status. Agents communicate **only through files** in an `audit/` directory inside the audited project; you carry the baton between sessions and make exactly one mandatory kind of decision — which findings to fix.
+until the pass queue is empty and every finding reaches a terminal status. Agents communicate **only through files** in an `audit/` directory inside the audited project; you carry the baton between sessions and make one routine mandatory decision — which findings to fix. (Rarer exceptional halts also need you, all distinct from triage — enumerated once in `XCHECK.md` §3 and detailed in §8/§11 below; this contract does not re-count them.)
 
 Repository: **github.com/vsov/xcheck** · License: MIT · Orchestrator: Python 3, stdlib only, zero dependencies.
 
@@ -59,7 +59,7 @@ On top of that, every finding is screened for **systemicity** before it is fixed
 |---|---|---|
 | Planner | agent, 1 session | Inventories the project and its norms → `AUDIT.md`: dimensions, unit map, pass queue |
 | Auditor | agent, N sessions | One pass = one dimension × a batch of units → findings + a coverage report |
-| **Triage** | **you** | **`accepted` / `rejected` / `deferred` in the ledger — the single mandatory human gate** |
+| **Triage** | **you** | **`accepted` / `rejected` / `deferred` in the ledger — the one routine mandatory human gate** (rarer exceptional gates exist, all distinct from triage — enumerated in `XCHECK.md` §3) |
 | Remediator | agent, N sessions | A batch of accepted findings: validate → census → plan → fix → self-check |
 | Verifier | agent, N sessions | A verdict on every fix: `closed` or `reopened`. **Never the one who fixed it** |
 
@@ -92,9 +92,9 @@ During triage the agent is the pen, not the decider: it presents findings, recor
 | Path | What it is |
 |---|---|
 | `XCHECK.md` | The methodology core. The **only** normative document agents read. Installed into each audited project. |
-| `bin/xcheck` | The orchestrator (Python 3, stdlib). Drives sessions between human gates. Includes a 54-test selftest. |
+| `bin/xcheck` | The orchestrator (Python 3, stdlib). Drives sessions between human gates. Includes a decision-logic selftest whose pass count is measured from the check lines it emits to `sys.stdout`. |
 | `templates/` | Artifact skeletons: `finding.md`, `class-finding.md`, `pass.md`, `plan.md`, plus `AUDIT-text.md` / `AUDIT-code.md` starting points. |
-| `skills/` | Shared launcher skills used by Codex, Claude Code, and both plugin manifests. Zero normative content. |
+| `skills/` | Shared launcher skills used by Codex, Claude Code, and both plugin manifests. Thin, but not zero-normative: some methodology rules are duplicated here for safety/ergonomics, so reinstall after any methodology change (§7). |
 | `launchers/` | Per-CLI installer (`install-launchers.sh`). OpenCode commands are generated from `skills/` at install time. |
 | `bootstrap.md` | From zero to a running cycle: install block, session one-liners, the full cycle step by step. |
 | `install.sh` | One-command install of the methodology into a target project. |
@@ -143,7 +143,7 @@ The checked-in `skills/` directory is also the payload for `.claude-plugin/plugi
 ### 5.4 Verify the toolchain
 
 ```bash
-python3 bin/xcheck selftest    # expect: PASS (54/54)
+python3 bin/xcheck selftest    # expect: PASS (N/N) — all checks green, zero failures
 ```
 
 ## 6. Quickstart: your first audit
@@ -197,6 +197,7 @@ You write **only the status column of the ledger** — never the finding files. 
 
 - Codex: `$xcheck-remediate` (name a finding range or CF id in the request to override the auto-pick)
 - Claude Code / OpenCode: `/xcheck-remediate` (`/xcheck-remediate F-0012..F-0019` or a CF id overrides)
+- The override changes only *which* IDs are worked, never the lifecycle gate: every named ID must be in a remediation-eligible status (`accepted`, `reopened`, `validated`, `planned`, or an unfinished member of an open RP). A `reported`/`fixed`/`closed` (or any terminal) ID is dropped or stops the session with the offending statuses — a range never rewrites a finding outside a remediation state.
 - By hand:
 
   ```
@@ -232,7 +233,7 @@ Per finding: run its verification procedure, then adversarially inspect the surr
 - `disputed` → one written round of Auditor objection in the finding file, then you decide.
 - Passes left in the queue → back to step 2.
 
-**The audit is complete** when the pass queue is empty and every ledger row is terminal. `$xcheck-status` in Codex, `/xcheck-status` in Claude Code/OpenCode, or `xcheck status` runs this termination check for you.
+**The audit is complete** when the pass queue is empty and every ledger row is terminal. One special case: a remainder of only `deferred` rows is **complete *with* deferred debt** — the automatic cycle is exhausted, but `deferred` is not terminal (§3), so those rows stay as your re-triage debt until you accept or reject them. `$xcheck-status` in Codex, `/xcheck-status` in Claude Code/OpenCode, or `xcheck status` runs this termination check for you.
 
 ## 7. Launchers: skills for Codex and Claude Code, commands for OpenCode
 
@@ -249,7 +250,7 @@ Six launchers, same logical names on every platform:
 
 Run them in a session opened **in the audited project root**. In Codex, mention the override alongside the skill (for example, `$xcheck-audit for P-03` or `$xcheck-remediate for CF-0002`). Claude Code and OpenCode accept command arguments directly.
 
-The wrappers are deliberately thin: zero methodology content, only "check install → pick charter → play the role per `audit/XCHECK.md`." Updating the methodology never requires updating the launchers (and vice versa). Cross-agent protections are preserved: `xcheck-verify` refuses same-agent verification, and all writing launchers honor the `audit/.lock` protocol.
+The wrappers are deliberately thin: preflight → pick charter → play the role per `audit/XCHECK.md`, which stays the single normative source. They are not *empty*, though, and not zero-normative: for ergonomics and safety some of the methodology's rules are duplicated inside the skills. Because of that duplication, re-run the launcher installer after *any* change to the methodology (§5.3, `install-launchers.sh` is idempotent), so the installed copies and the generated OpenCode commands never fall behind. Cross-agent protections are preserved: `xcheck-verify` stops when the agent or session that produced the fixes would verify them (a fresh session of the same agent is the disclosed fallback minimum, XCHECK.md §3), and all writing launchers honor the `audit/.lock` protocol.
 
 **Codex note:** launchers install as skills in `~/.agents/skills/`. Codex can invoke them explicitly with `$xcheck-*` or implicitly from a matching request. For non-interactive use, the orchestrator drives Codex through `codex exec` with the same role charters — see the next section.
 
@@ -260,19 +261,19 @@ The wrappers are deliberately thin: zero methodology content, only "check instal
 ```
 xcheck [--project DIR] next               run one session (whoever's turn it is)
 xcheck [--project DIR] loop               run until a human gate
-xcheck [--project DIR] [--budget S] loop  same, with a wall-clock cap
+xcheck [--project DIR] [--budget S] loop  same, with a wall-clock budget (checked between sessions)
 xcheck [--project DIR] status             read-only dashboard
-xcheck [--project DIR] unlock [--force]   remove a stale lock
+xcheck [--project DIR] unlock [--force]   diagnose a stale lock (--force removes it)
 xcheck [--project DIR] lint               ledger ↔ finding-file consistency check
 xcheck [--project DIR] metrics            auditor accuracy, fix durability, distributions
-xcheck selftest                           54 decision-logic tests
+xcheck selftest                           decision-logic + invariant self-checks
 ```
 
-Flags for `loop`: `--step` (pause between sessions), `--max-sessions N` (cost cap), `--budget SECONDS` (wall-clock cap; whichever hits first), `--dry-run` (print the decision and the command without launching).
+Flags for `loop`: `--step` (pause between sessions), `--max-sessions N` (cost cap), `--budget SECONDS` (wall-clock budget — checked **before each session**, so the loop stops once elapsed time reaches it but a session already running is never interrupted; whichever of `--budget`/`--max-sessions` hits first), `--dry-run` (print the decision and the command without launching).
 
-**Turn priority:** needs-human stop → verification of `fixed` → remediation (unfinished/reopened first, then accepted) → audit passes → triage stop. The loop halts at: triage needed, `⚠ needs-human`, dispute, queue exhausted, or a session error — each with an explanation of what is expected from you.
+**Turn priority:** needs-human stop → verification of `fixed` → remediation (unfinished/reopened first, then accepted CF, then accepted findings) → audit passes → triage stop. The loop halts at: triage needed, `⚠ needs-human`, a dispute, a norm-ratification gate, an inconsistent ledger (non-terminal rows with no legal move), a broken/unclosed class dependency, a corrupt ledger or missing coverage report, queue exhausted (or exhausted-with-deferred-debt), a session error, a **non-converging cycle** (`loop_progress_limit` consecutive sessions that repeat the same decision without moving `audit/`), or the **orchestrator's own source changing mid-run** (a self-remediation edited `bin/xcheck`; the loop runs the code image loaded at its start, so restart `loop` to pick up the fix) — each with an explanation of what is expected from you. This is the authoritative, exhaustive list of the **orchestrator's halt points**, not a count of the methodology's human gates: the human gates among these halts (`⚠ needs-human`, a dispute, a norm-ratification gate, and triage) are enumerated canonically in `XCHECK.md` §3 — this list does not re-count them.
 
-**Your touch points in `loop` mode:** install → triage sessions → final review. Everything else runs by itself.
+**Your touch points in `loop` mode:** the routine one is install → triage sittings → final review, and on a clean run that is all. But every other halt above also needs you: `⚠ needs-human`, a dispute, a norm-ratification gate, a session error, a re-triage of deferred debt (the `exhausted-with-deferred-debt` stop — `deferred` is not terminal, §3, so accept or reject to fully close), or a repair (corrupt ledger / missing coverage / broken class link / an inconsistent ledger — non-terminal rows with no move), a non-converging cycle (sessions repeating without progress), or a restart after a self-edit to `bin/xcheck`. Between halts the loop runs by itself; it never silently works around a gate that wants a human, and it never keeps spinning on unchanged state or runs on a stale image of its own edited source.
 
 ### orchestrator.conf
 
@@ -280,25 +281,27 @@ Per-project config at `audit/orchestrator.conf` (`key=value` lines):
 
 | Key | Default | Meaning |
 |---|---|---|
-| `planner`, `auditor`, `verifier` | Codex (`codex exec ...`) | CLI command per role |
-| `remediator` | `claude -p --dangerously-skip-permissions` | CLI command for the Remediator |
+| `planner_cmd`, `auditor_cmd`, `verifier_cmd` | Codex (`codex exec ...`) | CLI command per role |
+| `remediator_cmd` | `claude -p --dangerously-skip-permissions` | CLI command for the Remediator |
 | `batch_size` | 8 | remediation batch size (AUDIT.md `remediation_batch_size` overrides) |
 | `max_sessions` | 20 | default session cap for `loop` |
+| `loop_progress_limit` | 2 | stop the loop after N consecutive sessions that repeat the same decision and leave `audit/` unchanged — a non-converging cycle, not a cost cap (0 = off) |
 | `triage_batch_cap` | 0 (unbounded) | stop for triage once N findings pile up — smaller sittings |
 | `push_after_commit` | off | opt-in `git push` after courier commits |
 | `session_note` | — | extra text appended to every session prompt (e.g. scope exclusions) |
 
 ### Lock protocol
 
-All writing sessions — orchestrated and launcher-started — share `audit/.lock` (JSON: pid, role, started, host). Acquisition is atomic (`O_CREAT|O_EXCL`); a live foreign lock aborts the run; a dead one is cleared with `xcheck unlock`. This enforces the "one writing session at a time" rule mechanically.
+All writing sessions — orchestrated and launcher-started — share `audit/.lock`, a DIRECTORY holding an `owner` record (JSON: pid, role, started, host). Acquisition is atomic (`mkdir` — the second writer gets EEXIST); release is owner-checked (a session removes only a lock whose owner record it wrote, so it can never delete a lock it does not own). A live foreign lock aborts the run. Plain `xcheck unlock` never removes a lock — it only diagnoses whether one is provably stale; removing a lock identified by a pathname cannot be made race-free against a concurrent clear + re-acquire (F-0095), so every removal goes through `xcheck unlock --force`, where the operator asserts no writing session is active. `--force`'s own residual `read→unlink` window is a **palliative** — an operator-asserted trade-off, not elimination of the race; the real elimination is a kernel advisory lock (`fcntl.flock`), tracked as backlog **C6** (`docs/backlog-2-plan.md`). This enforces the "one writing session at a time" rule mechanically. A pre-directory `.lock` FILE (old protocol) is a legacy lock: `xcheck unlock --force` clears it, and there is no auto-migration.
 
 ### Courier commits
 
-After every session the orchestrator commits **only the session's own new dirt** — a snapshot-diff of `git status` before and after. Pre-existing uncommitted work in your project is never swept into an audit commit.
+After every session the orchestrator commits **only the session's own new dirt** — a snapshot-diff of `git status` before and after. Pre-existing uncommitted work in your project is never swept into an audit commit — this holds without exception. When a file the session would otherwise write carries pre-existing operator work — a **mixed-ownership path**: e.g. the terminal-triage sync would rewrite a `status:` line in a finding file you had already edited before running `next` — the orchestrator does not try to split the file into its two authors (a self-written diff parser is one more guess it refuses to make), and it does not write its own change into your file either. It leaves that path **entirely untouched**, names it, and stops; the whole file stays in your worktree exactly as you left it. And because the file keeps its old status, the audit will **not report done** while the handoff is open — the same silent-gap rule that governs coverage. Resolve it by committing or discarding your edit; the next `next` then applies the decision cleanly and commits it. The trade-off is deliberate — part of the session's own work waits for you rather than risk carrying your pre-existing edit into an audit commit. So the orchestrator commits every path it touched cleanly, and only those; a mixed path is never one of them, and completion is never certified over one.
 
 ### Health checks
 
 - `xcheck lint` — orphaned rows/files, status drift, class-membership breaks, malformed rows, non-canonical `next` tokens. Read-only, exit 1 on issues.
+  - Two kinds of check, by design (CF-0001, norm-owner ruling): **single-record** checks (a field's presence, format, enumeration, range, value syntax) run through the *shared* validator that `next`, `status`, and `metrics` also route through — so a value one refuses can never reach another as if valid. **Cross-record semantic** checks that must load and compare *other* records — `members` existence, `next`-owner ↔ status consistency, `class` ↔ CF, a `dimension` slug against the `AUDIT.md` list — stay lint-surface only: the decision path is kept cheap and local rather than loading the whole corpus to route one finding.
 - `xcheck metrics` — auditor accuracy (% of accepted findings surviving validation), fix durability (% closed on first verification), findings by dimension/severity/status, class-finding totals, attempts distribution.
 
 ## 9. Agent mapping and cross-agent discipline
@@ -341,11 +344,11 @@ When a Remediator's census finds the same defect pattern **at or above `class_th
 
 - **(a)** fix all census instances;
 - **(b)** (a) + fix the norm so the class cannot recur;
-- **(c)** (b) + an automated guard (grep check, lint rule, CI script) — the class becomes impossible.
+- **(c)** (b) + an automated guard (grep check, lint rule, CI script) — the class becomes structurally hard to reintroduce.
 
 A CF goes through **your triage** like any finding — accepting it sanctions a global change, which is exactly why it needs the gate even though a Remediator created it mid-batch. Look at the Census section (is the list complete?) and the strategy rung (too aggressive? too timid?). Rejecting a CF loses no work: its members return to the queue as individual fixes.
 
-**Norm ratification gate:** if a (b)/(c) fix would change a norm, or must pick a side in a conflict between norms, the Remediator stops after writing the plan and routes the conflict to you before executing. A class fix in the wrong direction multiplies one error across the whole corpus — hence the brake.
+**Norm ratification gate — an exceptional human gate distinct from triage (one of those enumerated in `XCHECK.md` §3):** if a (b)/(c) fix would change a norm, or must pick a side in a conflict between norms, the Remediator stops after writing the plan and routes the conflict to **you as the norm owner** (not to triage — triage only writes the status column). The stop is a machine-readable brake recorded in the CF file, not just prose: frontmatter `blocked: norm-ratification` plus `norm-ruling: pending`, and a `## Norm ruling` section stating the conflict and the candidate sides. To lift it you set `norm-ruling` to the winning norm-id token — e.g. `norm-ruling: N1` or `norm-ruling: N1-over-N4` — and write your reasoning into `## Norm ruling`; only then does a Remediator clear `blocked:` and resume per your ruling. The gate is **fail-closed**: an absent, `pending`, or unrecognized `norm-ruling` value keeps the CF stopped, and a `## Norm ruling` note without the frontmatter token does **not** unblock it. A class fix in the wrong direction multiplies one error across the whole corpus — hence the brake.
 
 Verification of a CF re-runs the census expecting the polarity's clean result — zero instances for a presence class, zero orphans (every anchor's twin-search now returns its twin) for an absence class — or an explicit documented-exceptions list. "Fixed 12 of 15" (and its absence twin "created 12 of 15") = `reopened`.
 
@@ -373,11 +376,11 @@ The methodology and templates are English. **Findings, plans, and reports are wr
 | Quotes "not found" en masse | The material shifted a lot (e.g. after a class fix) | Normal: validation marks such findings `obsolete` or refreshes locators. Do nothing |
 | Session exceeded its charter / no coverage report | Protocol violation | The pass does not count — rerun with a smaller charter; if it recurs, reduce the default pass size in AUDIT.md |
 | Ledger diverged from finding files | Index drift | Agents repair it on contact; direction is file→ledger always, except your triage decisions (ledger→file). `xcheck lint` reports it |
-| Stale `audit/.lock` | A session died without releasing | `xcheck unlock` (refuses a live lock without `--force`) |
+| Stale `audit/.lock` | A session died without releasing | `xcheck unlock` diagnoses it; `xcheck unlock --force` removes it (after confirming no writing session is active) |
 
 **Can one agent do everything?** Mechanically yes (roles are functions), but you lose the main safeguard: cross-verification by fresh eyes. Minimum worth insisting on: the Verifier is a separate fresh session that never saw the fix.
 
-**Why can't triage be delegated to an agent?** It is the one point where "what counts as a defect and what we spend cycles on" is decided — a value judgment of the material's owner. Everything else is execution.
+**Why can't triage be delegated to an agent?** It is the routine point where "what counts as a defect and what we spend cycles on" is decided — a value judgment of the material's owner. (The rarer exceptional gates, `XCHECK.md` §3, are the owner's judgment too — a norm-ratification ruling especially; triage is just the one that recurs every cycle.) The rest is execution.
 
 **How much human time does a cycle take?** Target mode: minutes to launch sessions plus one substantive triage sitting per batch of passes. If your per-cycle time grows, protocol is being violated somewhere — see the table above.
 

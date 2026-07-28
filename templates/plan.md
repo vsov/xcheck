@@ -25,11 +25,16 @@ updated: YYYY-MM-DD
 ## Fix plan
 <!-- Remediator, step 3. Per remaining finding: exact edit
      intended, order, risks (what could break nearby).
-     NORM RATIFICATION GATE (§8) for any class fix: if a (b)/(c) strategy
+     NORM RATIFICATION GATE (§8 rule 8) for any class fix: if a (b)/(c) strategy
      changes a norm, relies on a norm another source contradicts, or must pick a
-     side in a norm conflict — STOP after writing the plan, route the conflict to
-     the norm owner through triage, and do NOT enter the Execution log until it
-     is ratified. -->
+     side in a norm conflict — STOP after writing the plan and do NOT enter the
+     Execution log until the norm owner rules. This is NOT a Triage route (Triage
+     writes the status column only, §3): record the stop durably in the CF file —
+     frontmatter `blocked: norm-ratification` + `norm-ruling: pending` and a
+     `## Norm ruling` section stating the conflict — and wait for the norm owner
+     (human, not Triage) to set `norm-ruling` to the winning norm id (e.g. N1 /
+     N1-over-N4). The `norm-ruling` field is the fail-closed machine gate; resume
+     only once it holds a norm id (§8 rule 8 sync/resume). -->
 
 ## Execution log
 <!-- Remediator, steps 4–5. What was actually changed (files/sections/

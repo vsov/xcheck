@@ -78,7 +78,7 @@ range, or stop condition and is not a charter; it must not start a session.
 6. Remediator sessions take batches of `accepted` findings through validate → census → plan → fix → self-check.
 7. Verifier sessions take the `fixed` batch and give each finding a `closed` or `reopened` verdict.
 8. Repeat from step 4 with the next queued pass. `reopened` findings re-enter the cycle at step 6 (Remediator), not step 4; `reopen_limit` consecutive `reopened` verdicts on one finding (2 by default) sets `⚠ needs-human` in the ledger and a human decides what happens to it next.
-9. The audit is complete when the AUDIT.md pass queue is empty and every ledger row is terminal (closed, rejected, withdrawn, obsolete, or superseded-by-class with a closed CF).
+9. The audit is complete when the AUDIT.md pass queue is empty and every ledger row is terminal (closed, rejected, withdrawn, obsolete, or superseded-by-class with a closed CF). One special case: a remainder of only `deferred` rows is complete *with* deferred debt — the automatic cycle is exhausted, but `deferred` is not terminal, so those rows stay as re-triage debt until you accept or reject them.
 
 ## 4. Rules of the road
 
@@ -89,7 +89,7 @@ range, or stop condition and is not a charter; it must not start a session.
 
 ## 5. Launchers (optional)
 
-Instead of pasting one-liners by hand, install the thin launchers — `$xcheck-plan`, `$xcheck-audit`, `$xcheck-triage`, `$xcheck-remediate`, `$xcheck-verify`, `$xcheck-status` in Codex, or the corresponding `/xcheck-*` commands in Claude Code and OpenCode. See `launchers/README.md` (`launchers/install-launchers.sh`). They auto-pick the next charter and contain no methodology content.
+Instead of pasting one-liners by hand, install the thin launchers — `$xcheck-plan`, `$xcheck-audit`, `$xcheck-triage`, `$xcheck-remediate`, `$xcheck-verify`, `$xcheck-status` in Codex, or the corresponding `/xcheck-*` commands in Claude Code and OpenCode. See `launchers/README.md` (`launchers/install-launchers.sh`). They auto-pick the next charter and delegate the rules to `audit/XCHECK.md` — not pure delegation, though, and not zero-normative: for safety and ergonomics some of the methodology's rules are duplicated in the skills, so re-run the installer after *any* change to the methodology.
 
 ## 6. Field notes (pilot-tested)
 

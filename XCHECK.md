@@ -1,6 +1,6 @@
 # XCHECK — Cross-Agent Audit & Remediation Methodology
 
-version: 0.2.0
+version: 0.2.2
 
 Self-contained. If you are an agent reading this inside a project's `audit/`
 directory, this file plus `AUDIT.md` plus your charter is everything you need.
@@ -11,6 +11,14 @@ Language rule: this methodology and all templates are English. Findings,
 plans, and reports are written in the operator's working language — pick one
 per audit and stay consistent. Evidence quotes are always verbatim
 in the original language of the material.
+
+The working language covers **prose only**. Every structural token stays in its
+canonical English form regardless of the operator's language: frontmatter keys
+and their enumerated values (§2), section headings taken from a template, the
+`COVERED:` / `NOT COVERED:` coverage markers (§4 rule 5), status names (§5), and
+LEDGER column headers. These are read by tooling, not by people: a translated
+marker is invisible to the check that depends on it, and the artifact then
+carries a silent gap while looking complete.
 
 ## 1. System Overview
 
@@ -57,6 +65,9 @@ unit: <unit path>              # a YAML list for a cross-unit finding
 status: reported
 class: null | CF-NNNN          # which class finding, if any, absorbed this one
 attempts: 0                    # incremented on each reopened cycle
+recurrence-of: null            # or F-NNNN/CF-NNNN — this finding is a fresh recurrence of a terminal ancestor (§3 dedup, §9 rule 8)
+blocked: null                  # or `norm-ratification` — a planned CF halted at the §8 gate (paired with `norm-ruling`)
+norm-ruling: null              # §8 rule 8 machine gate on a blocked CF: `pending`, then the winning norm id (e.g. N1 or N1-over-N4) once the norm owner rules
 pass: P-01                     # which pass discovered it
 updated: <date>
 ```
@@ -73,14 +84,14 @@ Ownership rules:
 
 A role is a function, not an agent identity. The default assignment is Codex for Planner, Auditor, and Verifier, and Claude for Remediator — but any role can be played by any capable agent, and a third agent can join without changing this file. One rule is hard: **the Verifier is never the agent or session that produced the fix it verifies.** Prefer a different agent; the minimum acceptable substitute is a different, fresh session of the same agent.
 
-The only mandatory human step in the cycle is Triage. Everything else runs agent-to-agent through files.
+Triage is the only mandatory human step in the routine cycle; everything else there runs agent-to-agent through files. Exceptional halts still require the human, in gates distinct from Triage — a disputed resolution (§5), the norm-ratification gate (§8 rule 8), and a non-converging cycle's `⚠ needs-human` flag (§9) — but the routine audit→triage→remediate→verify loop needs the human only at Triage.
 
 ### Planner
 - **Mission:** inventory the project and its norms; produce dimensions, a unit map, and a pass queue.
 - **Default agent:** Codex, one session.
 - **Reads:** XCHECK.md; the project's normative documents; a structural listing of the project. Not the full content of every unit.
 - **Writes:** AUDIT.md.
-- **Stop conditions:** AUDIT.md exists, with at least one dimension backed by a norm and a non-empty pass queue.
+- **Stop conditions:** AUDIT.md exists, with at least one dimension backed by a norm, a unit map, and a non-empty pass queue.
 - **Forbidden:** filing findings; reading unit content end to end "to get a feel for it" — inventory only.
 
 ### Auditor
@@ -88,13 +99,13 @@ The only mandatory human step in the cycle is Triage. Everything else runs agent
 - **Default agent:** Codex, one session per pass (or a split of one, §4 rule 4).
 - **Reads:** XCHECK.md; AUDIT.md; the pass charter; the units in the charter's scope; the norm the charter cites; templates/pass.md and templates/finding.md, copied when starting a pass or filing a finding.
 - **Writes:** `findings/`, `passes/P-NN-<dimension>.md`, new rows in LEDGER.md; the AUDIT.md pass queue — tick the completed pass's checkbox; append split remainders as new queued passes; one round of written objection in a finding file when the Remediator disputes it (§5, §9 rule 3).
-- **Dedup rule:** before filing a finding, check it against ledger titles only — not finding bodies, not memory of earlier passes. A matching title gets new evidence appended to the existing finding, not a duplicate.
+- **Dedup rule:** before filing a finding, check it against ledger titles only — not finding bodies, not memory of earlier passes. Dedup matches against **non-terminal** findings only. A matching title on a **non-terminal** finding (still in the cycle, including a `superseded-by-class` member whose CF is not yet closed) is a duplicate: append the new evidence to that finding, with no status change and no second file. A title match on a **terminal** finding (`closed`, `rejected`, `withdrawn`, `obsolete`, or `superseded-by-class` with a *closed* CF) is **not** a duplicate — the defect has **recurred**. Terminal is final: never revive the old finding. File a **new** finding with a new id and `recurrence-of: <terminal id>` in its frontmatter; the terminal ancestor keeps its status, so the ledger records the regression as its own row and the metrics count a fresh cycle. The new finding is `reported` and re-enters the human Triage gate like any other. A class finding escalates on **live** instances in the current material, not on recurrence history: at or above `class_threshold` recurrences of one pattern, the recurrence count raises the closing standard for that root (§8 rule 2, §7) and a class finding opens only if the **live** census of the current material also reaches `class_threshold` (§8) — recurrence history alone, with nothing live to fix as a class, does not mint one, though where a class does open a repeatedly recurring root may sit on a higher strategy rung. Filing a recurrence as a new `reported` finding is the Auditor's call, the same authority that files any `reported` finding (§5, §9 rule 8).
 - **Stop conditions:** charter's unit range exhausted, or `max_findings_per_pass` (§10) reached, or context budget exhausted.
 - **Forbidden:** fixing anything; exceeding the charter's unit range instead of splitting it; filing a finding that does not meet the Evidence Standard (§6).
 
 ### Triage
 - **Mission:** decide which findings get worked.
-- **Default agent:** human. The one mandatory gate in the cycle.
+- **Default agent:** human — the one mandatory gate in the routine cycle (the exceptional human gates are enumerated at the head of §3, not re-counted here).
 - **Reads:** LEDGER.md; finding files for any finding whose title alone doesn't settle the call.
 - **Writes:** the status column in LEDGER.md only — `reported` to `accepted`, `rejected`, or `deferred`. Batch decisions are allowed, e.g. all `critical` and `major` findings to `accepted` in one action. Rejecting a CF also reverts every finding in its `members:` list to `accepted` (write the ledger rows; agents apply to files per §2).
 - **Stop conditions:** every `reported` row under review has a decision.
@@ -140,9 +151,10 @@ accepted    → (Remediator)  → validated | disputed | obsolete
 validated   →                  planned → fixed
 fixed       → (Verifier)    → closed | reopened
 reopened    →                  back to the Remediator (planned → fixed again), attempts += 1
-disputed    → (Auditor/human) → accepted | withdrawn
+disputed    → (human decides, Auditor dispute-round records, agent-as-pen) → accepted | withdrawn
 any status  → (Remediator)  → superseded-by-class (absorbed by a CF finding, §8)
 superseded-by-class → (Triage)   → accepted (CF rejected at triage, §8 rule 4)
+(terminal is final — a recurrence of a terminal defect enters as a NEW finding tagged `recurrence-of:`, §3 dedup, never a transition of the old one)
 ```
 
 | From | Event / actor | To |
@@ -156,12 +168,13 @@ superseded-by-class → (Triage)   → accepted (CF rejected at triage, §8 rule
 | `fixed` | Verifier confirms | `closed` |
 | `fixed` | Verifier rejects | `reopened` |
 | `reopened` | returns to the Remediator | `planned`, then `fixed` again; the Remediator increments `attempts` |
-| `disputed` | Auditor or human sides with the finding | `accepted` |
-| `disputed` | Auditor or human sides against the finding | `withdrawn` |
+| `disputed` | human sides with the finding (Auditor dispute-round records, agent-as-pen) | `accepted` |
+| `disputed` | human sides against the finding (Auditor dispute-round records, agent-as-pen) | `withdrawn` |
 | any | Remediator opens a class finding for its pattern | `superseded-by-class` |
 | `superseded-by-class` | Triage rejects the CF | `accepted` |
+| terminal | defect recurs — Auditor files a NEW finding (§3 dedup) | ancestor unchanged; the new finding starts at `reported`, tagged `recurrence-of:` |
 
-Status ownership is the rule that keeps five roles from stepping on each other: *"One status, one owner: triage statuses are changed only by the human; validated/planned/fixed only by the Remediator; closed/reopened only by the Verifier; disputed resolution by the Auditor or the human. Never touch a status you do not own."*
+Status ownership is the rule that keeps five roles from stepping on each other: *"One status, one owner: triage statuses are changed only by the human; validated/planned/fixed only by the Remediator; closed/reopened only by the Verifier; disputed resolution decided by the human, recorded agent-as-pen in the Auditor dispute-round (§9 rule 3) — Triage never writes it. Never touch a status you do not own."* Terminal statuses are immutable — no role rewrites them. When a terminal defect recurs, the Auditor files a **new** `reported` finding tagged `recurrence-of:` (§3 dedup, §9 rule 8) rather than reviving the old one, so the regression is a fresh row and the terminal history stays intact.
 
 Definitions:
 
@@ -170,6 +183,7 @@ Definitions:
 - **`reopen_limit` breach** — `reopen_limit` (default 2, §10) consecutive `reopened` verdicts on the same finding set the ledger flag `⚠ needs-human`; the automatic cycle stops and a human decides what happens next.
 - **`withdrawn`** — a `disputed` finding resolved against the Auditor; it closes without a fix.
 - **`superseded-by-class`** — set immediately on every member finding when a class finding is opened for its pattern (§8 rule 4); reverts to `accepted` if the human rejects the CF at triage.
+- **`blocked: norm-ratification`** — a frontmatter field (not a status), set on a `planned` CF that stopped at the §8 norm-ratification gate. It withholds the fix while `status` stays `planned`. Its machine-readable pair is the **`norm-ruling`** frontmatter field: `pending` while the decision is outstanding, and the winning norm id (e.g. `N1` or `N1-over-N4`) once the norm owner (human, not Triage) rules. The gate is fail-closed on `norm-ruling` — absent, `pending`, empty, or any unrecognized token keeps the CF stopped; only a valid norm-id token lets the Remediator clear `blocked:` and resume (§8 rule 8). The `## Norm ruling` body section carries the human-readable reasoning but is not itself the gate.
 
 ## 6. Evidence Standard
 
@@ -191,31 +205,34 @@ Two checks apply the Evidence Standard at two different points in the cycle.
 
 **Verification** is the Verifier's binding verdict on a `fixed` finding, and it has two parts. First, run the procedure the Auditor wrote in "How to verify the fix" against the current material. Second, adversarially inspect the surroundings of the change for collateral damage that procedure alone would not catch. The verdict is `closed` or `reopened`. Evidence for a `reopened` verdict is held to the same Evidence Standard (§6) as an original finding — an exact quote and a norm, not an impression. When a fix installed an automated guard, verify the guard adversarially: plant the defect it claims to catch in a temporary copy and expect the guard to fail it — a guard that passes its own selftest but not a live mutation is a hole, not a defense.
 
+**Promise-width defect.** When a finding's defect is that a predicate or guard is *narrower than the claim it enforces* — a docstring, a §-norm, a README line, or a gate message that promises more than the code actually checks — the fix closes only if both the Remediator's self-check and the Verifier's check poison the **claim**, not the one branch the finding happened to report. For every route or call site where the claim is relied upon, an input that satisfies the narrow predicate yet violates the broad claim must be rejected. Fixing only the branch named in the finding is not a fix — the same claim usually leaks through another route. The Verifier poisons the claim across all routes rather than merely re-running the finding's original procedure.
+
 ## 8. Class Escalation
 
 A finding may be one instance of a systematic defect rather than a one-off. Escalation exists to catch that and fix it globally instead of one instance at a time.
 
 1. **Census is the mandatory second step of remediation**, after validation and before planning. The Remediator formulates the finding's pattern and searches for it across the whole project — not only in the finding's own unit. The search procedure fits the material (a literal-text or pattern search across files; a targeted read across sections where the pattern could recur) and must be recorded precisely enough for someone else to rerun it. The census inherits the finding's evidence polarity (§6 rule 7): for a presence defect the pattern is the defect itself and the census counts its occurrences; for an absence defect the pattern is the anchor→twin pairing, and the census enumerates every anchor and counts the **orphans** — anchors whose mandatory twin is missing.
-2. **Escalation threshold: `class_threshold` instances (default 3, §10).** Below threshold, fix the instance found and note its siblings in the finding file. At or above threshold, open a class finding.
+2. **Escalation threshold: `class_threshold` instances (default 3, §10).** The count is of **live instances found by the census of the current material** (rule 1) — the defects standing in the corpus right now — not the *recurrence* count of the same root across already-terminal findings, which §3 dedup and §9 rule 8 track separately and which counts something different. Below threshold, fix the instance found and note its siblings in the finding file. At or above threshold, open a class finding. When the live census is below threshold but the same root has *recurred* at or above `class_threshold` times across terminal findings, do **not** mint a class finding: there is nothing in the corpus to fix as a class. The recurrence instead raises the **closing standard** for that root — most often the promise-width standard (§7) or the point-fix criterion the recurring finding names — so the point fix is held to a higher bar rather than multiplied into a class. **Declining escalation at or above threshold** is legal in exactly one shape, and only with the norm owner's ratification recorded in the plan: every live instance is *already* an accepted finding inside the current charter (so escalation would surface no unlisted sibling) **and** global strategy (a) is identical to point-fixing them (so there is no norm or guard to fix once). Minting the class would then only move accepted findings to `superseded-by-class` and defer them a triage round. Declining on any other ground, or without the ratification, is a protocol violation — the Remediator may propose the decline, never make it.
 3. **A class finding (`CF-NNNN`) contains:** an exact definition of the pattern and its search procedure; a full census of instances with locators, including any the original pass missed; the root cause — most often a norm that is missing, ambiguous, or inconsistently enforced; and a global strategy on an increasing scale:
    - (a) fix every instance;
    - (b) (a), plus fix the norm so the class cannot recur;
    - (c) (b), plus an automated guard where one is possible — a search check, a lint rule, a style script — so the class becomes structurally hard to reintroduce.
-4. **A CF finding passes through the same Triage gate** as any other finding — status `reported`, the human decides. The single human gate does not multiply, but a global change never bypasses it. On creation, every member finding moves to `superseded-by-class` immediately; if the human rejects the CF at triage, members revert to `accepted` for point fixes instead. The Remediator continues the current session with the rest of the batch — the CF waits for the next triage round.
+4. **A CF finding passes through the same Triage gate** as any other finding — status `reported`, the human decides. The routine triage gate does not multiply — opening class findings adds no extra triage sittings — but a global change never bypasses it. (A class fix that changes a norm or picks between norms additionally stops at the separate norm-ratification gate, §8 rule 8, cleared by the norm owner — a human, not Triage.) On creation, every member finding moves to `superseded-by-class` immediately; if the human rejects the CF at triage, members revert to `accepted` for point fixes instead. The Remediator continues the current session with the rest of the batch — the CF waits for the next triage round.
 5. **Class verification is a re-census**, performed by the Verifier: rerun the recorded search procedure and expect the polarity's clean result (§6 rule 7) — for a presence class, zero instances of the defect; for an absence class, zero **orphans**, i.e. every anchor's twin-search now returns its twin — or explicitly documented exceptions. Re-running an absence search and finding zero of the still-missing artifacts is not a pass: the orphan count, not the missing-artifact count, must reach zero. This is what catches "fixed 12 of 15" and its absence twin "created 12 of 15."
 6. **Norm write-back is part of the fix, not a side effect.** Strategies (b) and (c) edit the project's normative documents in the same remediation, not as optional follow-up work. If the project maintains a persistent agent-memory or lessons store, record the norm change there in the same remediation.
 7. **The five-step Remediator sequence maps onto an accepted CF as follows:** validate = re-run the recorded census procedure; census = already done (the CF's census IS the scope); plan = the Global strategy section; fix as usual; self-check = re-run the census procedure expecting the polarity's clean result (zero instances for a presence class, zero orphans for an absence class) or documented exceptions.
-8. **Norm ratification gate.** If a class fix under strategy (b) or (c) changes a norm, relies on a norm that another normative source contradicts (including machine registries and configuration files), or must pick a side in any conflict between norms — the Remediator stops after writing the plan and routes the conflict to the norm owner through triage before executing. Documenting a norm conflict and proceeding anyway is a protocol violation for class fixes: a class fix in the wrong direction multiplies one error across the whole corpus.
+8. **Norm ratification gate.** If a class fix under strategy (b) or (c) changes a norm, relies on a norm that another normative source contradicts (including machine registries and configuration files), or must pick a side in any conflict between norms, the Remediator stops after writing the plan — it does not execute. The stop is recorded **durably in the CF file**, so a fresh session reconstructs it from files alone (design resumability), and the durable record is a **machine gate**, not prose: frontmatter `blocked: norm-ratification` **and** `norm-ruling: pending`, plus a `## Norm ruling` section stating the conflict and the candidate sides. The CF stays `planned`; the block, not a new status, is what withholds the fix. The decision is made by the **norm owner** — the human, in a gate distinct from Triage — who records **which side wins as a norm-id token in the `norm-ruling` frontmatter field** (e.g. `norm-ruling: N1` or `norm-ruling: N1-over-N4`) and writes the reasoning and any plan amendment into `## Norm ruling`. The gate is **fail-closed on `norm-ruling`**: an absent field, `pending`, an empty value, or any unrecognized token keeps the CF stopped — a conflict description with no explicit frontmatter decision does **not** unblock it. Only a recognized norm-id token lifts the gate. This does not run through Triage: Triage writes the status column only (§3) and the CF is already `planned`, so routing a ratification decision through Triage would exceed its write surface; writing the winning side into a frontmatter field the human owns keeps every role inside its surface and leaves the side-choosing to the human, never an agent. **Sync/resume rule:** a fresh session reads `blocked:` and `norm-ruling:` together — `blocked: norm-ratification` with `norm-ruling` absent/`pending`/unrecognized means the decision is not yet made (wait for the norm owner); a valid norm-id in `norm-ruling` means it is ratified, so the Remediator clears `blocked:` and executes per the ruling (or, if the ruling rejects the direction, re-plans the class fix per the winning norm — the Remediator stays inside the remediation loop and never sets `withdrawn`, which §5 owns to the disputed resolution, not to the Remediator). Documenting a norm conflict and proceeding anyway is a protocol violation for class fixes: a class fix in the wrong direction multiplies one error across the whole corpus.
 
 ## 9. Failure Modes
 
 1. **Stale finding.** The material moved since the finding was filed, and the quote is no longer found by a literal search. Re-locate by meaning. If the defect is gone, mark `obsolete`. If it moved, update the locator and proceed. Fixing "from memory of where it used to be" is forbidden.
-2. **Non-converging cycle.** `reopen_limit` (§10) consecutive `reopened` verdicts on one finding set `⚠ needs-human` in the ledger (§5). The automatic cycle does not keep spinning on its own.
+2. **Non-converging cycle.** `reopen_limit` (§10) consecutive `reopened` verdicts on one finding set `⚠ needs-human` in the ledger (§5). The automatic cycle does not keep spinning on its own. **A human-sanctioned re-take resets `attempts` to 0.** The counter measures *unsupervised* non-convergence — how far the agent loop got on its own — not total effort, so once the human has read the reopen, ruled on it and sanctioned another attempt, the supervision the counter guards for has already happened. Clearing only the ledger flag is not enough: the gate is computed from the finding file's own `attempts` (a `reopened` finding at `attempts + 1 >= reopen_limit` halts), so a re-take that leaves the counter untouched stops the cycle again with no visible cause. Reset the counter in the same edit that records the ruling.
 3. **Agent dispute.** The Auditor insists on a finding the Remediator marked `disputed`. One written round of objection in the finding file, then the human decides. Ping-pong between agents is forbidden.
 4. **Ledger drift.** The finding file is truth; LEDGER.md is a derived index (§2). Whoever notices a mismatch fixes the ledger silently — except a pending triage decision, which flows the other way: apply it to the file per §2 rule 3.
 5. **Charter overflow.** The remainder of an overflowing charter becomes a new queued pass in AUDIT.md (§4 rule 4). A session interrupted mid-charter must still leave a coverage report (§4 rule 5) — otherwise the pass counts as not done at all.
 6. **Concurrent human edits to the material.** Not forbidden. The Evidence Standard (§6) self-protects: a quote either still matches, or the finding falls into the stale-finding path above.
 7. **Git.** If the project is under git: remediation commits reference finding IDs, and verification reads diffs. If not: the finding's Remediation section lists the files or sections changed. Git is an amplifier, not a requirement.
+8. **Recurring defect.** A defect that a title-match ties to a **terminal** finding (`closed`, `rejected`, `withdrawn`, `obsolete`, or `superseded-by-class` with a closed CF) has recurred. Terminal is final: reviving the old finding would rewrite closed history, and quietly appending the evidence to it is a silent gap — durable as text but unreachable, because the finding's terminal `status`/`next` never call anyone back. The dedup rule (§3) resolves it: the Auditor files a **new** `reported` finding carrying `recurrence-of: <terminal id>`, leaving the ancestor terminal, so the regression is a fresh ledger row that re-enters the human Triage gate and counts as a new cycle in the metrics. At or above `class_threshold` recurrences of one pattern, the recurrence count raises the **closing standard** for that root (§7, §8 rule 2); it opens a class finding only when the **live** census of the current material also reaches `class_threshold` (§8 rule 2) — recurrence history alone, with nothing live to fix as a class, does not mint one, though where a class does open a repeatedly recurring root may sit on a higher strategy rung. Recording a recurrence only as appended evidence on the terminal finding, without filing the new finding, is the silent gap this rule forbids.
 
 ## 10. Configuration Defaults
 

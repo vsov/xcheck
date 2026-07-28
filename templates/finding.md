@@ -7,6 +7,9 @@ unit: # material unit; YAML list if the finding spans units
 status: reported
 class: null # CF-XXXX once absorbed by a class finding
 attempts: 0 # the Remediator increments this when re-taking a reopened finding
+recurrence-of: null # or F-XXXX/CF-XXXX — set when this finding is a fresh recurrence of a TERMINAL ancestor (§3 dedup, §9 rule 8); the ancestor stays terminal
+blocked: null # or `norm-ratification` — a planned CF halted at the §8 gate (paired with `norm-ruling`); null for an ordinary finding
+norm-ruling: null # §8 rule 8 machine gate on a blocked CF: `pending`, then the winning norm id (e.g. N1 or N1-over-N4) once the norm owner rules; null for an ordinary finding
 pass: P-XX # the audit pass that produced this finding
 updated: YYYY-MM-DD
 ---
