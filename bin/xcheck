@@ -497,10 +497,38 @@ SESSION_HYGIENE = (
     "before you exit."
 )
 
+# §4 rule 9: the construal dispatch gets its OWN prompt, NOT the role's prompt with a
+# substituted charter. Ouroboros-3, first live use: the gate was dispatched through
+# PROMPTS["Planner"], whose charter is HARD-CODED ("produce audit/AUDIT.md") with no
+# `{charter}` slot at all — so `.format(charter=...)` silently discarded the construal
+# instruction and the agent did the ordinary Planner job. The gate was a NO-OP. That is the
+# promise-width root again (§7): the norm claimed "the role writes its construal and stops",
+# the predicate only renamed a charter inside a prompt that still ordered the work.
+#
+# A construal session is NOT the role doing its job with different words; it is a different
+# session type that happens to be played by the same role. It therefore gets a prompt that
+# says so, and `role_prompt_charter_issues` refuses any role prompt that takes a charter
+# without a slot to put it in, so the silent-discard half cannot recur either.
+# The Planner's charter, as DATA. It used to be prose baked into PROMPTS["Planner"] with no
+# `{charter}` slot, which made the Planner the one role whose charter was implicit — and that
+# anomaly caused two defects in a row: the construal instruction was silently discarded into
+# it (the gate became a no-op), and then `role_and_charter` returned None for it, so the
+# Planner could never write a construal carrying the non-nullable `charter` the record
+# requires — a permanent stop-construal. A charter that exists but is not written down is
+# the same defect shape as a claim that is wider than its predicate: the thing is real, the
+# record of it is missing. Now every dispatched role names its charter, and
+# `prompt_charter_slot_issues` requires all four to have somewhere to put it.
+PLANNER_CHARTER = "inventory this project and its norms; produce audit/AUDIT.md. Do not audit anything yet"
+
 PROMPTS = {
+    "Construal": (
+        "Read audit/XCHECK.md §4 rule 9. You are the {role}, but THIS SESSION DOES NOT DO "
+        "THE {role}'S WORK: do not plan, audit, remediate or verify anything, and create or "
+        "edit NO file except the one named below. Writing that one file IS the whole "
+        "session. {charter}" + SESSION_HYGIENE
+    ),
     "Planner": (
-        "Read audit/XCHECK.md. Role: Planner. Charter: inventory this project "
-        "and its norms; produce audit/AUDIT.md. Do not audit anything yet." + SESSION_HYGIENE
+        "Read audit/XCHECK.md. Role: Planner. Charter: {charter}." + SESSION_HYGIENE
     ),
     "Auditor": (
         "Read audit/XCHECK.md and audit/AUDIT.md. Role: Auditor. "
@@ -769,6 +797,25 @@ def construal_issues(audit_dir: Path):
         key = (fm.get("key") or "").strip()
         if key and fname != f"{key}.md":
             issues.append(f"construals/{fname}: filename does not match the record's own key '{key}' (expected {key}.md)")
+        # The key is DERIVED from role+charter, so the record must reproduce its own key
+        # from its own fields. Without this the two halves drift silently: Ouroboros-3
+        # round 1 produced a record filed under the orchestrator's key while its `charter:`
+        # field named something else entirely, so nothing on disk could be checked against
+        # anything else on disk. A construal that cannot regenerate its own key does not
+        # identify the charter it claims to construe.
+        role_v, charter_v = (fm.get("role") or "").strip(), (fm.get("charter") or "").strip()
+        if key and role_v and charter_v and construal_key(role_v, charter_v) != key:
+            issues.append(
+                f"construals/{fname}: `key` is '{key}' but construal_key(role, charter) over this record's OWN"
+                f" fields gives '{construal_key(role_v, charter_v)}' — the record does not identify the charter"
+                f" it claims to construe (§4 rule 9: same role+charter => same key)")
+        # An admission cannot predate the record it admits (§4 rule 9; F-0119 on dates).
+        created_v, at_v = (fm.get("created") or "").strip(), (fm.get("admitted-at") or "").strip()
+        if created_v and at_v and not _canon_calendar_date("created", created_v) \
+                and not _canon_calendar_date("admitted-at", at_v) and at_v < created_v:
+            issues.append(
+                f"construals/{fname}: `admitted-at` {at_v} is EARLIER than `created` {created_v}"
+                f" — the construal was admitted before it existed (§4 rule 9)")
         if (fm.get("status") or "").strip() == "admitted":
             admitter = (fm.get("admitted-by") or "").strip()
             session = (fm.get("session") or "").strip()
@@ -2488,9 +2535,18 @@ def role_and_charter(kind, detail):
             f"touching anything else. Set `key: {key}`, `role: {role}`, `status: proposed`, "
             f"`session: <your XCHECK_SESSION_ID>`, and leave `admitted-by` null — you must "
             f"NOT admit your own construal (§4 rule 9). Fill all five sections. "
-            f"The charter you are construing: {orig}")
+            # The charter is DELIMITED and copied verbatim, because the record's `key` is
+            # derived from it and is now checked against it (`construal_issues`). Ouroboros-3
+            # round 1: an undelimited trailing charter swallowed the session-hygiene text and
+            # the operator note, the agent folded the result into a YAML block scalar, and the
+            # record ended up claiming a charter that produces a DIFFERENT key. Copy exactly
+            # what is between the markers, on ONE line, and nothing else.
+            f"Set `charter:` to EXACTLY the text between the markers below — one line, "
+            f"verbatim, no block scalar, nothing from outside the markers (the record's key "
+            f"is derived from it and is checked against it):\n"
+            f"<<<CHARTER>>>{orig or ''}<<<END CHARTER>>>")
     if kind == "run-planner":
-        return "Planner", None
+        return "Planner", PLANNER_CHARTER
     if kind == "run-auditor":
         return "Auditor", detail
     if kind == "run-remediator":
@@ -2825,13 +2881,44 @@ def build_cmd(conf, role, prompt):
     return parts + [prompt]
 
 
-def run_session(project: Path, conf, role, charter, dry_run=False, lock=None, construal=None):
+def prompt_charter_slot_issues(prompts=None):
+    """Templates that would SILENTLY DISCARD a charter handed to them.
+
+    `str.format(charter=...)` on a template with no `{charter}` placeholder is not an
+    error — it returns the template unchanged. So a dispatch can hand a role its charter
+    and have the charter vanish, with the agent receiving only the template's own
+    hard-coded orders. That is exactly how the §4 rule 9 gate became a no-op for the
+    Planner on its first live use: the construal instruction was passed and dropped.
+
+    Rule, derived from what `role_and_charter` actually returns: EVERY dispatched role gets
+    a charter, so every role template must have a `{charter}` slot, and the construal
+    template must have both `{role}` and `{charter}`. The Planner used to be the exception —
+    its charter was prose baked into its own prompt — and that exception is precisely what
+    let the construal instruction be discarded, so there is no exception any more."""
+    prompts = PROMPTS if prompts is None else prompts
+    issues = []
+    if "{charter}" not in prompts.get("Construal", ""):
+        issues.append("PROMPTS['Construal'] has no `{charter}` slot — the construal instruction would be discarded (§4 rule 9)")
+    if "{role}" not in prompts.get("Construal", ""):
+        issues.append("PROMPTS['Construal'] has no `{role}` slot — the session would not know which role it is construing for")
+    for role in ("Planner", "Auditor", "Remediator", "Verifier"):
+        if "{charter}" not in prompts.get(role, ""):
+            issues.append(f"PROMPTS[{role!r}] receives a charter from role_and_charter but has no `{{charter}}` slot — it would be silently discarded")
+    return issues
+
+
+def run_session(project: Path, conf, role, charter, dry_run=False, lock=None, construal=None,
+                construal_prompt=False):
     """Run one agent session. If `lock` is given, the caller already holds the
     writing lock and this call runs (subprocess + courier) inside it — the whole
     next-transaction is serialized (F-0009). If `lock` is None (standalone call),
     the session acquires and releases its own lock, with the courier commit still
     inside the locked region: acquire -> subprocess -> courier -> release."""
-    prompt = PROMPTS[role].format(charter=charter) if charter else PROMPTS[role]
+    if construal_prompt:
+        # §4 rule 9: the gate's own prompt, never the role's (see PROMPTS["Construal"]).
+        prompt = PROMPTS["Construal"].format(role=role, charter=charter)
+    else:
+        prompt = PROMPTS[role].format(charter=charter) if charter else PROMPTS[role]
     note = conf.get("session_note", "").strip()
     if note:
         prompt += f" Project note from the operator: {note}"
@@ -3431,7 +3518,7 @@ def construal_gate_resolver(audit_dir: Path, today=None):
         if status == "proposed":
             env = parse_envelope(audit_dir)
             if envelope_covers(env, role, today):
-                _admit_construal(path, env["name"], today)
+                _admit_construal(path, env["name"], today, (fm.get("created") or "").strip())
                 return None
             return "stop-construal", (role, charter, rel, "it is `proposed` and no live envelope covers it")
         return "stop-construal", (role, charter, rel, f"its status is `{status}`, not `admitted`")
@@ -3439,16 +3526,23 @@ def construal_gate_resolver(audit_dir: Path, today=None):
     return resolve
 
 
-def _admit_construal(path: Path, envelope_name, today):
+def _admit_construal(path: Path, envelope_name, today, created=None):
     """Record an ENVELOPE admission on a proposed construal, in place.
 
     Writes only the three admission fields; everything else — including `session`, the
     producer's identity — is left exactly as the producer wrote it, so the
     producer≠admitter check reads the same two values afterwards that it read before."""
     text = path.read_text(encoding="utf-8", errors="replace")
+    # The orchestrator stamps UTC; the producing agent stamps whatever its own clock calls
+    # today. Across a timezone boundary that produced `admitted-at: 2026-08-02` on a record
+    # whose `created:` was 2026-08-03 — admitted the day BEFORE it existed (Ouroboros-3
+    # round 1). An audit chronology that runs backwards is not a small cosmetic problem: it
+    # is the kind of impossible date F-0119 closed, one field over. Never stamp earlier than
+    # the record's own creation date.
+    stamp = max(today, created) if created else today
     for field, value in (("status", "admitted"),
                          ("admitted-by", f"envelope:{envelope_name}"),
-                         ("admitted-at", today)):
+                         ("admitted-at", stamp)):
         text = re.sub(rf"(?m)^{re.escape(field)}\s*:.*$", f"{field}: {value}", text, count=1)
     path.write_text(text, encoding="utf-8")
 
@@ -3690,7 +3784,8 @@ def cmd_next(project: Path, conf, dry_run):
         # off, so nothing is injected and the child prompt is unchanged.
         ckey = (detail[2] if kind == "run-construal"
                 else (construal_key(role, charter or "") if conf_flag(conf, "construal_gate") else None))
-        rc = run_session(project, conf, role, charter, dry_run, lock=lock, construal=ckey)
+        rc = run_session(project, conf, role, charter, dry_run, lock=lock, construal=ckey,
+                         construal_prompt=(kind == "run-construal"))
     finally:
         # F-0114: name any mixed-ownership handoff on EVERY exit path (success, stop-error,
         # early gate) — a `finally` so it can never be skipped by whichever branch returns.
@@ -6796,6 +6891,162 @@ def selftest():
           + ("" if ok else f" -> {len(set(_texts.values()))} distinct of {len(_texts)}"))
     failed += 0 if ok else 1
 
+    # §4 rule 9, Ouroboros-3 round 1: the gate must reach the AGENT, not merely the
+    # decision. Every earlier check stopped at `decide()`/`role_and_charter()` — the kind
+    # and the charter STRING — and none asserted that the dispatched CHILD PROMPT carries
+    # the construal instruction. It did not: PROMPTS["Planner"] has no `{charter}` slot, so
+    # `.format(charter=...)` dropped it and the agent ran an ordinary Planner session,
+    # writing AUDIT.md while the gate reported itself armed. Measure the prompt.
+    _saved_cp = {n: globals()[n] for n in ("courier_commit", "dirty_paths")}
+    _orig_run_cp = _sp.run
+    _cp_cap = {}
+
+    def _capture_prompt(cmd, **k):
+        _cp_cap["cmd"] = cmd
+        return _R(0)
+    _cp_problems = []
+    for _role, _charter, _key in (("Planner", None, "aaaaaaaaaaaaaaaa"),
+                                  ("Auditor", "P-01", "bbbbbbbbbbbbbbbb"),
+                                  ("Remediator", "finding F-0001", "cccccccccccccccc"),
+                                  ("Verifier", "every finding in status fixed (F-0001)", "dddddddddddddddd")):
+        _r2, _c2 = role_and_charter("run-construal", (_role, _charter, _key, f"audit/construals/{_key}.md"))
+        with tempfile.TemporaryDirectory() as td:
+            proj = Path(td); (proj / "audit").mkdir()
+            globals()["courier_commit"] = lambda *a, **k: True
+            globals()["dirty_paths"] = lambda p: set()
+            _sp.run = _capture_prompt
+            try:
+                run_session(proj, {f"{_role.lower()}_cmd": "true {prompt}", "session_note": ""},
+                            _r2, _c2, dry_run=False, construal=_key, construal_prompt=True)
+            finally:
+                _sp.run = _orig_run_cp
+                for _n, _v in _saved_cp.items():
+                    globals()[_n] = _v
+        _child = (_cp_cap.get("cmd") or [""])[-1]
+        # the construal instruction, its key and its path REACH the agent...
+        for _need in ("OPERATIONAL CONSTRUAL", _key, f"audit/construals/{_key}.md",
+                      "must NOT admit your own construal", "STOP"):
+            if _need not in _child:
+                _cp_problems.append(f"{_role}: child prompt lacks {_need!r}")
+        # ...and the role's OWN standing orders do NOT, so nothing competes with it.
+        for _forbidden in ("produce audit/AUDIT.md", "Stop conditions per charter",
+                           "Follow the XCHECK.md §3 sequence", "Try to prove the fixes wrong"):
+            if _forbidden in _child:
+                _cp_problems.append(f"{_role}: child prompt still carries the role's own order {_forbidden!r}")
+    # and an ORDINARY dispatch is unchanged — the role's prompt, with its charter in it.
+    with tempfile.TemporaryDirectory() as td:
+        proj = Path(td); (proj / "audit").mkdir()
+        globals()["courier_commit"] = lambda *a, **k: True
+        globals()["dirty_paths"] = lambda p: set()
+        _sp.run = _capture_prompt
+        try:
+            run_session(proj, {"auditor_cmd": "true {prompt}", "session_note": ""},
+                        "Auditor", "P-01", dry_run=False)
+        finally:
+            _sp.run = _orig_run_cp
+            for _n, _v in _saved_cp.items():
+                globals()[_n] = _v
+    _plain = (_cp_cap.get("cmd") or [""])[-1]
+    if "Charter: pass P-01" not in _plain or "OPERATIONAL CONSTRUAL" in _plain:
+        _cp_problems.append("ordinary Auditor dispatch changed: expected its own prompt with the charter, got a construal prompt")
+    ok = not _cp_problems
+    print(f"{'PASS' if ok else 'FAIL'}: §4 rule 9 — a `run-construal` dispatch hands the AGENT a construal prompt carrying the key, the path and the no-self-admission rule, with the role's OWN standing orders absent, for all four dispatched roles; an ordinary dispatch is untouched (Ouroboros-3 round 1: the gate was a NO-OP because PROMPTS['Planner'] has no charter slot and silently discarded it)"
+          + ("" if ok else f" -> {_cp_problems}"))
+    failed += 0 if ok else 1
+
+    # No dispatched role may yield an EMPTY charter. The construal record requires a
+    # non-nullable `charter`, so a role dispatched without one can never write a valid
+    # construal — the gate then rejects its own record forever (Ouroboros-3 round 2: the
+    # Planner deadlocked at stop-construal exactly this way). Derived from decide()'s own
+    # run-* outcomes, not a hand list, so a future dispatch kind cannot reintroduce it.
+    _empty_charters = []
+    for _k2, _d2 in (("run-planner", None),
+                     ("run-auditor", "P-01"),
+                     ("run-remediator", ["F-0001"]),
+                     ("run-verifier", ["F-0001"])):
+        _rr, _cc = role_and_charter(_k2, _d2)
+        if not (_cc or "").strip():
+            _empty_charters.append(_k2)
+        # and the construal record built for it must satisfy the schema's non-nullable gate
+        if _field_gate("charter", *CONSTRUAL_SCHEMA["charter"][1:])((_cc or "").strip()):
+            _empty_charters.append(f"{_k2} (fails the construal schema)")
+    ok = not _empty_charters
+    print(f"{'PASS' if ok else 'FAIL'}: §4 rule 9 — EVERY dispatched role names a non-empty charter, so each can write a construal carrying the record's non-nullable `charter`; a role dispatched without one deadlocks the gate on its own record forever (Ouroboros-3 round 2: the Planner did)"
+          + ("" if ok else f" -> {_empty_charters}"))
+    failed += 0 if ok else 1
+
+    # the meta-check that would have caught it: a template handed a charter must have a
+    # slot to put it in. Exercised on the live table AND on mutated ones (§7 adversarial).
+    ok_live = not prompt_charter_slot_issues()
+    _no_slot = dict(PROMPTS); _no_slot["Construal"] = "no slots here at all"
+    ok_mut_c = any("Construal" in i and "charter" in i for i in prompt_charter_slot_issues(_no_slot))
+    _no_role = dict(PROMPTS); _no_role["Construal"] = "only {charter} here"
+    ok_mut_r = any("Construal" in i and "role" in i for i in prompt_charter_slot_issues(_no_role))
+    _no_aud = dict(PROMPTS); _no_aud["Auditor"] = "Role: Auditor. No slot."
+    ok_mut_a = any("'Auditor'" in i and "silently discarded" in i for i in prompt_charter_slot_issues(_no_aud))
+    ok = ok_live and ok_mut_c and ok_mut_r and ok_mut_a
+    print(f"{'PASS' if ok else 'FAIL'}: §4 rule 9 — every prompt template that RECEIVES a charter carries a `{{charter}}` slot, so `.format()` can never silently discard one (the Ouroboros-3 round-1 root); removing a slot from Construal or from a charter-taking role is named"
+          + ("" if ok else f" -> live={ok_live} c={ok_mut_c} r={ok_mut_r} a={ok_mut_a}"))
+    failed += 0 if ok else 1
+
+    # Ouroboros-3 round 1: three defects the FIRST live construal exposed, each caught here
+    # on the shape that actually occurred, not on an invented one.
+    with tempfile.TemporaryDirectory() as td:
+        audit = Path(td) / "audit"
+        (audit / "construals").mkdir(parents=True)
+        _k = construal_key("Auditor", "P-01")
+        _body = ("\n## Task frame\nx\n\n## Approach\nx\n\n## Assumptions\nx\n"
+                 "\n## Stop conditions\nx\n\n## Out of scope\nx\n")
+
+        def _wr(charter="P-01", key=None, created="2026-08-03", at="null", status="proposed",
+                adm="null"):
+            (audit / "construals" / f"{key or _k}.md").write_text(
+                f"---\nkey: {key or _k}\nrole: Auditor\ncharter: {charter}\n"
+                f"session: a1b2c3d4e5f60718\ncreated: {created}\nstatus: {status}\n"
+                f"admitted-by: {adm}\nadmitted-at: {at}\nenvelope: null\n---\n" + _body,
+                encoding="utf-8")
+
+        _o3 = []
+        _wr()
+        _o3.append(("clean record", construal_issues(audit) == []))
+        # (D2) a YAML block scalar loses the value; it must be REFUSED, not read as `>-`.
+        for _form in (">-", "|", ">", "|-", "|+", ">2"):
+            _wr(charter=_form)
+            _o3.append((f"block scalar {_form!r} refused",
+                        any("not in a declared form" in i for i in construal_issues(audit))))
+        # (D3) the record must regenerate its OWN key from its OWN role+charter.
+        _wr(charter="a different charter entirely")
+        _o3.append(("key vs charter mismatch named",
+                    any("does not identify the charter it claims to construe" in i
+                        for i in construal_issues(audit))))
+        # (D4) an admission cannot predate the record it admits.
+        _wr(created="2026-08-03", at="2026-08-02", status="admitted", adm="envelope:x")
+        _o3.append(("admitted-at before created named",
+                    any("EARLIER than `created`" in i for i in construal_issues(audit))))
+        _wr(created="2026-08-03", at="2026-08-03", status="admitted", adm="envelope:x")
+        _o3.append(("same-day admission is fine", construal_issues(audit) == []))
+        # and the envelope writer itself never stamps backwards, whatever the clock says.
+        _wr(created="2026-08-03")
+        _admit_construal(audit / "construals" / f"{_k}.md", "env", "2026-08-02", "2026-08-03")
+        _txt = (audit / "construals" / f"{_k}.md").read_text(encoding="utf-8")
+        _o3.append(("envelope stamp is clamped to `created`", "admitted-at: 2026-08-03" in _txt))
+        _o3.append(("clamped record is clean", construal_issues(audit) == []))
+        ok = all(v for _l, v in _o3)
+        print(f"{'PASS' if ok else 'FAIL'}: §4 rule 9 (Ouroboros-3 round 1) — a YAML BLOCK SCALAR charter is refused as an undeclared form instead of parsing to its own sigil, the record must REGENERATE its own key from its own role+charter, and an `admitted-at` earlier than `created` is named; the envelope writer clamps its stamp to the creation date so a UTC/local skew cannot admit a record before it existed"
+              + ("" if ok else f" -> {[l for l, v in _o3 if not v]}"))
+        failed += 0 if ok else 1
+
+    # the construal charter reaches the agent DELIMITED, so trailing prompt text (session
+    # hygiene, the operator note) cannot be absorbed into the recorded charter — which is
+    # what broke the key<->charter binding in the first place.
+    _r3, _c3 = role_and_charter("run-construal", ("Auditor", "P-01", "e" * 16, "audit/construals/x.md"))
+    ok = ("<<<CHARTER>>>P-01<<<END CHARTER>>>" in _c3
+          and _c3.rstrip().endswith("<<<END CHARTER>>>")
+          and "verbatim, no block scalar" in _c3)
+    print(f"{'PASS' if ok else 'FAIL'}: §4 rule 9 — the charter is handed to the agent DELIMITED and LAST, so appended session-hygiene/operator-note text cannot be swallowed into the recorded `charter` (the Ouroboros-3 round-1 root of the key<->charter mismatch)"
+          + ("" if ok else f" -> {_c3[-120:]!r}"))
+    failed += 0 if ok else 1
+
     # F-0012: a rejected CF with an 'accepted' member is legal (§8 rule 4)
     with tempfile.TemporaryDirectory() as td:
         audit = Path(td) / "audit"
@@ -9315,6 +9566,17 @@ def _fm_value(v):
     non-nullable gate rejects (ruling #7)."""
     m = re.search(r"\s#", v)
     s = (v[: m.start()] if m else v).strip()
+    # A YAML BLOCK SCALAR header (`|`, `>`, with any chomp/indent indicator: `|-`, `>-`,
+    # `|+`, `>2`) puts the real value on the FOLLOWING lines, which this flat line-based
+    # parser never reads. Left unflagged, `charter: >-` parsed to the two-character string
+    # `">-"`: a non-empty value that passes every predicate while the actual charter is
+    # gone. Ouroboros-3 round 1 hit exactly this — the construal recorded a 2-char charter
+    # and certified clean, so the record could not be checked against its own key. A block
+    # scalar is not a §2-declared form, so it is REFUSED like any other undeclared form
+    # (CF-0001 ruling #9: accept declared forms, do not normalise arbitrary YAML) rather
+    # than silently emptied.
+    if re.fullmatch(r"[|>][-+]?\d*", s):
+        return s, False
     if s.startswith("{"):
         return s, False  # a flow mapping is not a declared §2 form
     if s.startswith("["):

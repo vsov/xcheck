@@ -1,6 +1,6 @@
 {
   "name": "xcheck",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "description": "Cross-agent audit and remediation methodology for large code and text projects.",
   "author": {
     "name": "Viktor Sovietov",
