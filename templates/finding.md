@@ -10,6 +10,8 @@ attempts: 0 # the Remediator increments this when re-taking a reopened finding
 recurrence-of: null # or F-XXXX/CF-XXXX — set when this finding is a fresh recurrence of a TERMINAL ancestor (§3 dedup, §9 rule 8); the ancestor stays terminal
 blocked: null # or `norm-ratification` — a planned CF halted at the §8 gate (paired with `norm-ruling`); null for an ordinary finding
 norm-ruling: null # §8 rule 8 machine gate on a blocked CF: `pending`, then the winning norm id (e.g. N1 or N1-over-N4) once the norm owner rules; null for an ordinary finding
+refusal: null # §5 typed refusal — one of out-of-competence | blocked-dependency | charter-ambiguous | norm-conflict | material-missing | cost-exceeded when a role ACCEPTED this charter and cannot execute it; fill `## Refusal` too, and leave `status` untouched
+admitted-scope: null # §7 — the routes/inputs/call sites this fix's guarantee covers (a scalar or a flat list); required with `## Admitted scope` when the Remediator sets `fixed` and §10 `scope_typing` is on
 pass: P-XX # the audit pass that produced this finding
 updated: YYYY-MM-DD
 ---
@@ -43,6 +45,16 @@ updated: YYYY-MM-DD
 <!-- Remediator, step 1. validated / disputed / obsolete + the grounds.
      Quote re-found? Problem real? -->
 
+## Refusal
+<!-- Any role that ACCEPTED this charter and cannot execute it (§5). Set the
+     `refusal:` frontmatter field to one reason code, then state HERE what is
+     actually missing and what would unblock it — a bare code names a category
+     and carries no obstacle forward. Do NOT change `status`: a refusal is about
+     this attempt, not about the finding; the charter stays in force and the next
+     session inherits both the work and these reasons. Not a dispute (that
+     contests the finding) and not a rejection (that is Triage's call). Leave
+     empty otherwise. -->
+
 ## Objection
 <!-- Auditor — only when Validation = disputed (§9 Agent dispute). Exactly ONE
      written round: why the finding stands, evidence per §6. Append-only; then
@@ -51,6 +63,24 @@ updated: YYYY-MM-DD
 ## Remediation
 <!-- Remediator. Link to RP-XXXX, what was changed and where
      (files/sections; commit IDs if the project uses git). -->
+
+## Admitted scope
+<!-- Remediator, together with `status: fixed` (§7; enforced when §10 `scope_typing`
+     is on). Declare what this fix's guarantee covers and — mandatory — what it does
+     not. BOTH subsections are required: a coverage claim with no stated limit reads
+     as complete while admitting nothing about its edges, which is the promise-width
+     defect §7 names. The Verifier checks demanded ⊆ admitted: any claim the material
+     itself makes (a docstring, a message, a README line) that reaches past what is
+     admitted here is a promise-width defect and reopens the finding. -->
+
+### Covers
+<!-- Which routes, inputs, call sites, units. Be specific enough to be checkable. -->
+
+### Does not cover
+<!-- The residue. What a reader could reasonably assume is fixed and is not:
+     other call sites of the same claim, adjacent inputs, related units,
+     the general case behind the reported instance. "Nothing" is not an answer
+     unless the fix genuinely poisons the claim at every route (§7). -->
 
 ## Verification
 <!-- Verifier — never the fixer. Verdict (closed / reopened) + how the

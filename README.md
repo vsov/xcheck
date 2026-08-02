@@ -27,10 +27,11 @@ Repository: **github.com/vsov/xcheck** · License: MIT · Orchestrator: Python 3
 9. [Agent mapping and cross-agent discipline](#9-agent-mapping-and-cross-agent-discipline)
 10. [The audit/ directory in your project](#10-the-audit-directory-in-your-project)
 11. [Class findings: fixing the disease, not the symptom](#11-class-findings-fixing-the-disease-not-the-symptom)
-12. [Configuration reference](#12-configuration-reference)
-13. [Language policy](#13-language-policy)
-14. [Troubleshooting & FAQ](#14-troubleshooting--faq)
-15. [License](#15-license)
+12. [Candidate mechanisms (default off)](#12-candidate-mechanisms-default-off)
+13. [Configuration reference](#13-configuration-reference)
+14. [Language policy](#14-language-policy)
+15. [Troubleshooting & FAQ](#15-troubleshooting--faq)
+16. [License](#16-license)
 
 ---
 
@@ -93,7 +94,7 @@ During triage the agent is the pen, not the decider: it presents findings, recor
 |---|---|
 | `XCHECK.md` | The methodology core. The **only** normative document agents read. Installed into each audited project. |
 | `bin/xcheck` | The orchestrator (Python 3, stdlib). Drives sessions between human gates. Includes a decision-logic selftest whose pass count is measured from the check lines it emits to `sys.stdout`. |
-| `templates/` | Artifact skeletons: `finding.md`, `class-finding.md`, `pass.md`, `plan.md`, plus `AUDIT-text.md` / `AUDIT-code.md` starting points. |
+| `templates/` | Artifact skeletons: `finding.md`, `class-finding.md`, `pass.md`, `plan.md`, `construal.md`, plus `AUDIT-text.md` / `AUDIT-code.md` starting points. |
 | `skills/` | Shared launcher skills used by Codex, Claude Code, and both plugin manifests. Thin, but not zero-normative: some methodology rules are duplicated here for safety/ergonomics, so reinstall after any methodology change (§7). |
 | `launchers/` | Per-CLI installer (`install-launchers.sh`). OpenCode commands are generated from `skills/` at install time. |
 | `bootstrap.md` | From zero to a running cycle: install block, session one-liners, the full cycle step by step. |
@@ -288,6 +289,8 @@ Per-project config at `audit/orchestrator.conf` (`key=value` lines):
 | `loop_progress_limit` | 2 | stop the loop after N consecutive sessions that repeat the same decision and leave `audit/` unchanged — a non-converging cycle, not a cost cap (0 = off) |
 | `triage_batch_cap` | 0 (unbounded) | stop for triage once N findings pile up — smaller sittings |
 | `push_after_commit` | off | opt-in `git push` after courier commits |
+| `scope_typing` | `off` | candidate (§12): require `admitted-scope` + both halves of `## Admitted scope` on a `fixed` finding |
+| `construal_gate` | `off` | candidate (§12): require an admitted construal before a charter is dispatched |
 | `session_note` | — | extra text appended to every session prompt (e.g. scope exclusions) |
 
 ### Lock protocol
@@ -332,6 +335,7 @@ audit/
 ├── findings/            # one file per finding: F-NNNN-<slug>.md / CF-NNNN-<slug>.md
 ├── passes/              # one report per audit pass: P-NN-<dimension>.md
 ├── plans/               # remediation plans: RP-NNNN.md
+├── construals/          # one construal per (role, charter) — empty unless `construal_gate` is on (§12)
 ├── templates/           # artifact skeletons (installed copy)
 └── orchestrator.conf    # optional; per-project orchestrator config
 ```
@@ -352,7 +356,62 @@ A CF goes through **your triage** like any finding — accepting it sanctions a 
 
 Verification of a CF re-runs the census expecting the polarity's clean result — zero instances for a presence class, zero orphans (every anchor's twin-search now returns its twin) for an absence class — or an explicit documented-exceptions list. "Fixed 12 of 15" (and its absence twin "created 12 of 15") = `reopened`.
 
-## 12. Configuration reference
+## 12. Candidate mechanisms (default off)
+
+Three mechanisms ship in this release as **candidates**: implemented, tested, and **off by
+default**. They are recorded here because they change what an operator can turn on, not
+because their effect is proven — the measurement that would settle that has not been run.
+
+### Recorded refusal
+
+A role that accepts a charter and cannot execute it records a refusal instead of halting
+silently: `refusal:` in the finding's frontmatter, one value from a closed six-word
+vocabulary (`out-of-competence`, `blocked-dependency`, `charter-ambiguous`,
+`norm-conflict`, `material-missing`, `cost-exceeded`), plus prose in the finding's
+`## Refusal` section saying what is missing.
+
+What the code does: `xcheck lint` rejects a value outside the vocabulary and rejects a
+reason code whose `## Refusal` section is empty; `xcheck status`/`next`/`loop` return
+`stop-refusal` naming the finding and the reason instead of re-dispatching the same charter.
+Recording a refusal does **not** change the finding's `status` — the charter stays in force.
+
+Always on; there is no flag. It adds a field that was previously absent, so a project that
+never writes one sees no change.
+
+### Scope typing of a fix — `scope_typing` (default `off`)
+
+When a Remediator sets a finding `fixed`, it declares what its fix admits: `admitted-scope:`
+in the frontmatter and an `## Admitted scope` section with `### Covers` and
+`### Does not cover`.
+
+What the code does with `scope_typing=on`: `xcheck lint` fails a `fixed` finding that has no
+`admitted-scope`, no `## Admitted scope` section, or an empty half — naming the missing
+residue specifically. `closed` findings are never checked.
+
+What the code does **not** do: it does not judge whether the declaration is true of the fix.
+The `demanded ⊆ admitted` comparison is the Verifier's work, written into the Verifier's
+contract, not a predicate the tool evaluates.
+
+### Construal gate — `construal_gate` (default `off`)
+
+Before a chartered session may touch the material, it writes its own reading of the charter —
+task frame, approach, assumptions, stop conditions, out of scope — to
+`audit/construals/<key>.md`, and a **different** party admits it.
+
+What the code does with `construal_gate=on`: the orchestrator returns `run-construal` when no
+construal exists for the charter's key (dispatching the role to write it and stop),
+`stop-construal` when one exists but is not admitted, and dispatches the real charter only
+once it is. `xcheck lint` refuses a construal whose `admitted-by` equals its `session` —
+self-admission — and one that claims `admitted` with no admitter at all.
+
+A `construal_envelope` line in `AUDIT.md` can pre-authorize named roles, but only with a live
+`recheck-by` date; absent, malformed, expired, duplicated, or naming a non-role, it is treated
+as no envelope and human admission is required.
+
+With both flags `off`, the orchestrator's decision is byte-identical to what it was before
+these mechanisms existed — checked directly against the pre-integration decision path.
+
+## 13. Configuration reference
 
 Defaults live in `XCHECK.md` §10; `AUDIT.md` overrides them per project:
 
@@ -362,12 +421,13 @@ Defaults live in `XCHECK.md` §10; `AUDIT.md` overrides them per project:
 | `remediation_batch_size` | 8 | findings per Remediator session (large findings → cut to 3–4) |
 | `class_threshold` | 3 | census instances at which a class finding opens |
 | `reopen_limit` | 2 | consecutive reopens before `⚠ needs-human` |
+| `construal_envelope` | none | candidate (§12): pre-authorization for the construal gate; declared in AUDIT.md, needs a live `recheck-by` date, fail-closed |
 
-## 13. Language policy
+## 14. Language policy
 
 The methodology and templates are English. **Findings, plans, and reports are written in the operator's working language** — pick one per audit and stay consistent. **Evidence quotes are always verbatim in the material's own language**, regardless of the working language: the quote must remain findable by exact search.
 
-## 14. Troubleshooting & FAQ
+## 15. Troubleshooting & FAQ
 
 | Symptom | What it is | What to do |
 |---|---|---|
@@ -388,7 +448,7 @@ The methodology and templates are English. **Findings, plans, and reports are wr
 
 **An agent clearly broke protocol** (read "the whole project for context," left no coverage report). Don't count the session's result; rerun it. The protocol works only while violation = rerun, with no "just this once" exceptions.
 
-## 15. License
+## 16. License
 
 MIT — see [LICENSE](LICENSE).
 

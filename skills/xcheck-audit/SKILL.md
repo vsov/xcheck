@@ -14,6 +14,20 @@ Thin launcher: preflight + charter routing, delegating the rules to `audit/XCHEC
 5. Stop conditions are sacred (§4). Findings in the operator's working language; quotes verbatim in the material's language.
 6. **Session hygiene (F-0120):** create every temporary artifact (scratch copies, harnesses, fixtures, mutation copies, marker files) OUTSIDE the project tree — in a system temp dir — never inside the project. The orchestrator's courier ships the project tree, so a stray in-tree file is committed as material; clean up before you exit.
 
+## Construal (§4 rule 9)
+
+Off by default (§10 `construal_gate`). When the orchestrator dispatches you with a charter that begins "Before any effect on the material, write your OPERATIONAL CONSTRUAL", that charter IS the gate: copy `audit/templates/construal.md` to `audit/construals/<key>.md` — the key is `XCHECK_CONSTRUAL_KEY`, read it from the `Orchestration context` line appended to your role-prompt, since your shell `env` may not expose it — fill all five sections with real content, set `status: proposed` and `session:` to your own `XCHECK_SESSION_ID`, then STOP. Touch nothing else: writing the construal IS the whole session.
+
+Never set `status: admitted` and never fill `admitted-by:`. A producer that admits its own construal has licensed its own misreading; both `xcheck lint` and the gate refuse it by name. Admission is a separate act by a different party — a human, or a `construal_envelope` declared in AUDIT.md with a live `recheck-by` date. Your construal is EVIDENCE the admitter inspects, never authority you grant yourself.
+
+State your own reading, not a paraphrase of the charter. If your task frame and the charter's words diverge, that divergence is the point of the file and the reason the gate exists.
+
+## Refusal (§5)
+
+If you accept a charter and cannot execute it, record a refusal — do not halt silently and do not quietly substitute a narrower task. Set `refusal:` in the finding's frontmatter to exactly one reason from the closed vocabulary — `out-of-competence`, `blocked-dependency`, `charter-ambiguous`, `norm-conflict`, `material-missing`, `cost-exceeded` — and write what is actually missing, and what would unblock it, into that finding's `## Refusal` section. Both halves are required: `xcheck lint` rejects a bare reason code, because a category name carries no obstacle forward.
+
+Do NOT change the finding's `status`. A refusal is about this attempt, not about the finding: the charter stays in force, the work is still owed, and the next session inherits both the work and your reasons. A refusal is not a dispute (which contests the finding itself) and not a rejection (which is Triage's call, and Triage is the human).
+
 ## Lock discipline
 
 `audit/.lock` serializes writing sessions (§4 rule 8) and is shared with the orchestrator (`bin/xcheck`). It is a DIRECTORY, acquired atomically with `mkdir` — the second writer's `mkdir` fails with EEXIST, so the create IS the acquisition. Match that — never check-then-create (the gap between an existence check and a separate create lets two sessions both win).

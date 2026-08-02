@@ -1,6 +1,6 @@
 # XCHECK — Cross-Agent Audit & Remediation Methodology
 
-version: 0.2.2
+version: 0.3.0
 
 Self-contained. If you are an agent reading this inside a project's `audit/`
 directory, this file plus `AUDIT.md` plus your charter is everything you need.
@@ -41,7 +41,9 @@ audit/
   XCHECK.md                    # copy of this file — the audit is self-contained
   AUDIT.md                     # charter: dimensions, unit map, pass queue, norms, limits
   LEDGER.md                    # index: one row per finding
-  templates/                   # artifact skeletons (finding, class-finding, pass, plan) — copy the matching one when creating a new artifact file
+  templates/                   # artifact skeletons (finding, class-finding, pass, plan, construal) — copy the matching one when creating a new artifact file
+  construals/
+    <key>.md                   # one construal per (role, charter) — §4 rule 9; empty or absent unless §10 `construal_gate` is used
   findings/
     F-0001-<slug>.md           # one finding, one file, full biography inside
     CF-0001-<slug>.md          # one class finding
@@ -68,6 +70,8 @@ attempts: 0                    # incremented on each reopened cycle
 recurrence-of: null            # or F-NNNN/CF-NNNN — this finding is a fresh recurrence of a terminal ancestor (§3 dedup, §9 rule 8)
 blocked: null                  # or `norm-ratification` — a planned CF halted at the §8 gate (paired with `norm-ruling`)
 norm-ruling: null              # §8 rule 8 machine gate on a blocked CF: `pending`, then the winning norm id (e.g. N1 or N1-over-N4) once the norm owner rules
+refusal: null | out-of-competence | blocked-dependency | charter-ambiguous | norm-conflict | material-missing | cost-exceeded   # §5: this role accepted the charter and cannot execute it; the reason is carried forward, the status is untouched
+admitted-scope: null           # §7: the routes/inputs/call sites this fix's guarantee covers — a scalar or a flat list; required on a `fixed` finding when §10 `scope_typing` is on
 pass: P-01                     # which pass discovered it
 updated: <date>
 ```
@@ -132,7 +136,7 @@ Triage is the only mandatory human step in the routine cycle; everything else th
 
 ## 4. Session Protocol
 
-Eight rules. They apply to every session, in every role.
+Nine rules. They apply to every session, in every role.
 
 1. **Charter required.** No session starts without an exact scope and stop conditions — e.g. "dimension X, units 4–6, stop after 15 findings" for an Auditor, or "findings F-0012..F-0019" for a Remediator.
 2. **Fresh eyes.** State comes only from files. A session does not inherit conclusions from earlier sessions by memory. Anything a session acts on is re-verified against its source at the moment it is touched, regardless of what any prior session recorded about it.
@@ -142,6 +146,7 @@ Eight rules. They apply to every session, in every role.
 6. **No finding quota.** Caps (§10) are upper bounds, not targets, and there is no minimum. A clean pass — zero findings — is a valid result and is recorded as one.
 7. **Role launch is a one-liner.** A human starts a session with a single line: `Read audit/XCHECK.md. Role: <Role>. Charter: <charter text>.`
 8. **One active writing session per project at a time.** Coordination in v1 is manual: one human relays the baton between sessions. Concurrent writers are out of scope. Launcher tooling and scripted chains must serialize the same way: never start a writing session while another is active.
+9. **Construal before effects.** The recipient of a charter states its own operational construal before any effect on the material begins — the task frame in its own words, the approach it intends, the assumptions it is carrying, its stop conditions, and what it treats as out of scope. The construal is admitted as **evidence, never authority**: it is what the admitter inspects, not what authorizes the work, and admission is a separate act by a party that is not the producer. The mechanism is configurable through §10 `construal_gate`, which is `off` by default until its effect on fix durability is measured; a pre-authorization may stand in for per-charter admission only under §10 `construal_envelope`, which is fail-closed.
 
 ## 5. Finding Lifecycle
 
@@ -183,6 +188,7 @@ Definitions:
 - **`reopen_limit` breach** — `reopen_limit` (default 2, §10) consecutive `reopened` verdicts on the same finding set the ledger flag `⚠ needs-human`; the automatic cycle stops and a human decides what happens next.
 - **`withdrawn`** — a `disputed` finding resolved against the Auditor; it closes without a fix.
 - **`superseded-by-class`** — set immediately on every member finding when a class finding is opened for its pattern (§8 rule 4); reverts to `accepted` if the human rejects the CF at triage.
+- **`refusal`** — a frontmatter field (§2), not a status: a role that accepts a charter and cannot execute it records one reason drawn from the closed vocabulary plus prose naming what is missing. A refusal is an outcome carrying reasons, never a null — the reasons pass forward to every successor attempt on the same charter, and the charter itself stays in force (§4 rule 1), so the work remains owed rather than silently dropped. Recording a refusal never changes the finding's `status`, so no status-ownership rule of this section is engaged (§5). A refusal is distinct from `disputed`, where the finding itself is contested, and from `rejected`, where Triage declined it (§5): those two decide something about the finding, while a refusal decides only about this attempt at it. The reason code is the §2 frontmatter field and the prose is the finding's `## Refusal` section; a refusal recorded as a bare code with no stated prose is a silent gap of the kind §4 rule 5 forbids, so both are required together.
 - **`blocked: norm-ratification`** — a frontmatter field (not a status), set on a `planned` CF that stopped at the §8 norm-ratification gate. It withholds the fix while `status` stays `planned`. Its machine-readable pair is the **`norm-ruling`** frontmatter field: `pending` while the decision is outstanding, and the winning norm id (e.g. `N1` or `N1-over-N4`) once the norm owner (human, not Triage) rules. The gate is fail-closed on `norm-ruling` — absent, `pending`, empty, or any unrecognized token keeps the CF stopped; only a valid norm-id token lets the Remediator clear `blocked:` and resume (§8 rule 8). The `## Norm ruling` body section carries the human-readable reasoning but is not itself the gate.
 
 ## 6. Evidence Standard
@@ -206,6 +212,8 @@ Two checks apply the Evidence Standard at two different points in the cycle.
 **Verification** is the Verifier's binding verdict on a `fixed` finding, and it has two parts. First, run the procedure the Auditor wrote in "How to verify the fix" against the current material. Second, adversarially inspect the surroundings of the change for collateral damage that procedure alone would not catch. The verdict is `closed` or `reopened`. Evidence for a `reopened` verdict is held to the same Evidence Standard (§6) as an original finding — an exact quote and a norm, not an impression. When a fix installed an automated guard, verify the guard adversarially: plant the defect it claims to catch in a temporary copy and expect the guard to fail it — a guard that passes its own selftest but not a live mutation is a hole, not a defense.
 
 **Promise-width defect.** When a finding's defect is that a predicate or guard is *narrower than the claim it enforces* — a docstring, a §-norm, a README line, or a gate message that promises more than the code actually checks — the fix closes only if both the Remediator's self-check and the Verifier's check poison the **claim**, not the one branch the finding happened to report. For every route or call site where the claim is relied upon, an input that satisfies the narrow predicate yet violates the broad claim must be rejected. Fixing only the branch named in the finding is not a fix — the same claim usually leaks through another route. The Verifier poisons the claim across all routes rather than merely re-running the finding's original procedure.
+
+**Admitted scope.** When a Remediator sets a finding `fixed`, it declares the scope the fix admits: which routes, inputs and call sites the guarantee covers, and — mandatory — which it does not. The Verifier then checks **demanded ⊆ admitted**: any claim the code itself makes, in a docstring, a message or a README line, that reaches past the declared coverage is a promise-width defect under the rule above and reopens the finding. This gives the promise-width standard a written predicate instead of a second standard; the field is `admitted-scope` and the check is governed by §10 `scope_typing`, `off` by default.
 
 ## 8. Class Escalation
 
@@ -242,5 +250,20 @@ A finding may be one instance of a systematic defect rather than a one-off. Esca
 | `remediation_batch_size` | 8 | Upper bound on findings worked by one Remediator session (§3). |
 | `class_threshold` | 3 | Minimum instance count that escalates a finding to a class finding (§8 rule 2). |
 | `reopen_limit` | 2 | Consecutive `reopened` verdicts on one finding before it is flagged `⚠ needs-human` (§5, §9 rule 2). |
+| `construal_gate` | `off` | When `on`, a chartered session must have an admitted construal on file before effects begin (§4 rule 9). |
+| `scope_typing` | `off` | When `on`, a finding set `fixed` must carry `admitted-scope` with its mandatory residue (§7). |
+| `construal_envelope` | none | Optional pre-authorization standing in for per-charter admission under §4 rule 9: when declared it names the roles it covers and carries a mandatory `recheck-by` date, and it is **fail-closed** — absent, malformed, unparseable or expired means every construal needs human admission. |
 
 AUDIT.md may override any of these defaults per project.
+
+A `construal_envelope` is declared in AUDIT.md (this file declares the key; AUDIT.md
+instantiates it, §1), on one line, in one form:
+
+```
+construal_envelope: <name> roles=<Role>[,<Role>...] recheck-by=YYYY-MM-DD
+```
+
+Anything else — a second declaration, a missing or unparseable `recheck-by`, a date that
+is not a real calendar date, a date already past, a role outside §3 — is **not** an
+envelope, and every construal then needs human admission. The date is not optional and has
+no default: a pre-authorization that cannot state its own expiry is not one.

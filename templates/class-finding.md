@@ -11,6 +11,8 @@ attempts: 0
 recurrence-of: null # or F-XXXX/CF-XXXX — set when this class is itself a fresh recurrence of a TERMINAL ancestor (§3 dedup, §9 rule 8); the ancestor stays terminal
 blocked: null # or `norm-ratification` — set when this planned CF halts at the §8 gate (paired with `norm-ruling`)
 norm-ruling: null # §8 rule 8 machine gate: `pending` while blocked; the winning norm id (e.g. N1 or N1-over-N4) once the norm owner rules — fail-closed, this field is what lifts the gate
+refusal: null # §5 typed refusal — one of out-of-competence | blocked-dependency | charter-ambiguous | norm-conflict | material-missing | cost-exceeded when a role ACCEPTED this charter and cannot execute it; fill `## Refusal` too, and leave `status` untouched
+admitted-scope: null # §7 — the routes/inputs/call sites this class fix's guarantee covers (a scalar or a flat list); required with `## Admitted scope` when the Remediator sets `fixed` and §10 `scope_typing` is on
 pass: P-XX # the pass whose finding triggered the census escalation (— if surfaced purely in remediation)
 created-by: RP-XXXX # the remediation session whose census escalated
 updated: YYYY-MM-DD
@@ -30,6 +32,16 @@ updated: YYYY-MM-DD
      procedure to confirm the class is real and the census still holds
      (validated / disputed / obsolete + the grounds). This is the accepted-CF
      "validate" step and MUST precede remediation. -->
+
+## Refusal
+<!-- Any role that ACCEPTED this charter and cannot execute it (§5). Set the
+     `refusal:` frontmatter field to one reason code, then state HERE what is
+     actually missing and what would unblock it — a bare code names a category
+     and carries no obstacle forward. Do NOT change `status`: a refusal is about
+     this attempt, not about the class; the charter stays in force and the next
+     session inherits both the work and these reasons. Distinct from the §8
+     norm-ratification block, which is a decision the norm owner owes, not an
+     obstacle the role hit. Leave empty otherwise. -->
 
 ## Objection
 <!-- Auditor — only when the accepted-CF Validation = disputed (§9 Agent
@@ -70,6 +82,20 @@ updated: YYYY-MM-DD
 
 ## Remediation
 <!-- Remediator. What was changed, instance by instance + norm/guard edits. -->
+
+## Admitted scope
+<!-- Remediator, together with `status: fixed` (§7; enforced when §10 `scope_typing`
+     is on). Declare what this class fix's guarantee covers and — mandatory — what it
+     does not. BOTH subsections are required: for a class fix the residue is where
+     "fixed 12 of 15" hides, so state the instances, routes, or unit kinds the global
+     strategy does NOT reach. -->
+
+### Covers
+<!-- Which instances, routes, call sites, units the class fix reaches. -->
+
+### Does not cover
+<!-- The residue: census instances left standing (with why), routes the guard does
+     not watch, unit kinds outside the pattern's reach. -->
 
 ## Verification
 <!-- Verifier. Re-run the Pattern search procedure. Expected: the polarity's

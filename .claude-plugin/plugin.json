@@ -1,7 +1,7 @@
 {
   "name": "xcheck",
   "description": "Cross-agent audit & remediation methodology: Codex/Claude audit large projects (code or text), remediate, and cross-verify through a findings ledger with human triage gates.",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "author": {
     "name": "Viktor Sovietov"
   },

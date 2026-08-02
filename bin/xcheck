@@ -82,6 +82,18 @@ loop_progress_limit=2
 triage_batch_cap=0
 # push_after_commit: empty/off = never push (default); on/true/1/yes = git push after each courier commit.
 push_after_commit=
+# scope_typing (XCHECK.md §7/§10, candidate): off = default, behaviour unchanged. When on,
+# a finding set `fixed` must declare the scope its fix admits — `admitted-scope` plus an
+# `## Admitted scope` section carrying BOTH `### Covers` and `### Does not cover`. The
+# residue half is the load-bearing one: a coverage claim with no stated limit reads as
+# complete while admitting nothing. Unrecognised values are REFUSED, not read as off.
+scope_typing=off
+# construal_gate (XCHECK.md §4 rule 9/§10, candidate): off = default, behaviour unchanged.
+# When on, a chartered session must have an ADMITTED construal on file
+# (audit/construals/<key>.md) before it is dispatched: the orchestrator first runs the role
+# to WRITE its construal and stops, and a human (or a declared construal_envelope in
+# AUDIT.md) admits it. Unrecognised values are REFUSED, not read as off.
+construal_gate=off
 """
 
 TRIAGE_STATUSES = {"accepted", "rejected", "deferred"}
@@ -105,6 +117,16 @@ SEVERITIES = {"critical", "major", "minor", "info"}
 STATUSES = TERMINAL | {
     "reported", "accepted", "deferred",
     "validated", "planned", "fixed", "reopened", "disputed",
+}
+# XCHECK.md §5 `refusal`: the closed reason vocabulary for a role that ACCEPTED a
+# charter and cannot execute it. Declared ONCE here; the shared value predicate
+# (`_canon_refusal`), the decision path and the gate message all read this set, and
+# `_schema_enum_binding_issues` binds it back to the §2-shown enumeration so the norm
+# and the code cannot drift into two vocabularies (the CF-0001 single-source rule
+# applied to an enumeration rather than to a field name).
+REFUSAL_REASONS = {
+    "out-of-competence", "blocked-dependency", "charter-ambiguous",
+    "norm-conflict", "material-missing", "cost-exceeded",
 }
 
 # F-0042: the §8 norm-ratification gate is a fail-closed MACHINE gate on the CF's
@@ -175,6 +197,21 @@ def _canon_pass(v):
     return None if re.fullmatch(r"P-\d{2}", v) else f"pass '{v}' is not a P-NN pass id"
 
 
+def _canon_calendar_date(field, v, ref=""):
+    # F-0119: the ONE calendar-date predicate. A shaped-but-impossible date (`2026-02-30`,
+    # `2026-13-01`) must be refused wherever a date is canonical — `updated` on a finding,
+    # `created`/`admitted-at` on a construal, `recheck-by` on an envelope. Writing a second
+    # date parser for the new fields is exactly the forked-validation shape CF-0001 closed,
+    # so every caller comes through here and only the field NAME differs in the message.
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", v):
+        return f"{field} '{v}' is not a YYYY-MM-DD date"
+    try:
+        datetime(int(v[0:4]), int(v[5:7]), int(v[8:10]))
+    except ValueError:
+        return f"{field} '{v}' is not an existing calendar date{ref}"
+    return None
+
+
 def _canon_updated(v):
     # F-0119 (missed CF-0001 instance): the FORM `NNNN-NN-NN` is necessary but not
     # sufficient — a value-constrained §2 field's predicate must also check RANGE, and
@@ -183,14 +220,10 @@ def _canon_updated(v):
     # certify 'clean' and publish an impossible audit chronology (the same predicate-
     # promises-more-than-it-checks root CF-0001 closed). Parse the shaped value as a real
     # date (`datetime(y, m, d)` raises ValueError for a non-existent one); a leap day like
-    # `2024-02-29` stays legal because a real calendar accepts it.
-    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", v):
-        return f"updated '{v}' is not a YYYY-MM-DD date"
-    try:
-        datetime(int(v[0:4]), int(v[5:7]), int(v[8:10]))
-    except ValueError:
-        return f"updated '{v}' is not an existing calendar date (§2 `updated: <date>`)"
-    return None
+    # `2024-02-29` stays legal because a real calendar accepts it. The parse itself lives
+    # in the ONE shared `_canon_calendar_date`, so the construal and envelope dates cannot
+    # drift onto a second, weaker reading of what a date is.
+    return _canon_calendar_date("updated", v, " (§2 `updated: <date>`)")
 
 
 def _canon_blocked(v):
@@ -204,6 +237,17 @@ def _canon_blocked(v):
     # and accepted by the nullable gate, so this predicate only ever sees a PRESENT value
     # and no per-field predicate mentions a YAML null.
     return None if v == "norm-ratification" else f"blocked '{v}' is not `null` or `norm-ratification` (§2/§8)"
+
+
+def _canon_refusal(v):
+    # XCHECK.md §5: `refusal` is a value-constrained §2 field — a reason from the ONE
+    # closed vocabulary (REFUSAL_REASONS) or nothing. A free-text reason would be read
+    # raw by the decision path's gate message and by any successor session inheriting
+    # it, so it gets a shared predicate like every other constrained canonical field
+    # (the CF-0001 class root: a constrained field with no predicate is read past
+    # validation). The `null` spelling never reaches here — the parser folds it to ""
+    # and the nullable gate accepts it, so this predicate only ever sees a present value.
+    return None if v in REFUSAL_REASONS else f"refusal '{v}' is not in the §5 vocabulary ({'/'.join(sorted(REFUSAL_REASONS))})"
 
 
 def _canon_unit(v):
@@ -220,6 +264,22 @@ def _canon_unit(v):
         s = s[1:-1]
     toks = [t for t in re.split(r"[,\s]+", s.strip()) if t]
     return None if toks else "unit has no addressable path (§2 `unit: <unit path>`; a YAML list must carry at least one unit)"
+
+
+def _canon_admitted_scope(v):
+    # XCHECK.md §7/§10 `scope_typing`: the scope a fix ADMITS — which routes, inputs and
+    # call sites its guarantee covers. Set-valued, in the declared list FORM settled for
+    # `unit` (F-0112 / CF-0001 round 9): a scalar, or a flat list of scalars, never a
+    # nested or flow-mapping form. Nullable — the field is absent on every finding closed
+    # under the old norm and on every finding while `scope_typing` is off — but a PRESENT
+    # value must name at least one thing, because an empty list is a scope declaration
+    # that declares nothing while reading as filled. `_parse_frontmatter` folds a block
+    # YAML list into a comma-joined scalar, so a real multi-route value arrives non-empty.
+    s = (v or "").strip()
+    if s.startswith("[") and s.endswith("]"):
+        s = s[1:-1]
+    toks = [t for t in re.split(r"[,\s]+", s.strip()) if t]
+    return None if toks else "admitted-scope is present but names nothing (§7: a scalar, or a flat list with at least one element)"
 
 
 def _canon_dimension(v):
@@ -282,6 +342,8 @@ CANONICAL_SCHEMA = {
     "recurrence-of": (True,  True,  None),
     "blocked":       (True,  True,  _canon_blocked),
     "norm-ruling":   (True,  True,  None),
+    "refusal":       (True,  True,  _canon_refusal),
+    "admitted-scope": (True, True,  _canon_admitted_scope),
     "pass":          (True,  False, _canon_pass),
     "updated":       (True,  False, _canon_updated),
     "members":       (False, True,  _canon_members),
@@ -495,6 +557,229 @@ def is_session_id(s):
     exact shape `os.urandom(8).hex()` produces for XCHECK_SESSION_ID and lock
     nonces (F-0096)."""
     return bool(SESSION_ID_RE.match((s or "").strip()))
+
+
+# XCHECK.md §4 rule 9 — the CONSTRUAL record. A chartered session states, before any
+# effect on the material, how it read its charter; the construal is admitted as EVIDENCE
+# the admitter inspects, never as authority the producer grants itself. These constants are
+# the closed vocabularies, declared once each.
+CONSTRUAL_STATUSES = frozenset({"proposed", "admitted", "refused"})
+CONSTRUAL_SECTIONS = ("## Task frame", "## Approach", "## Assumptions",
+                      "## Stop conditions", "## Out of scope")
+# An envelope admitter is written `envelope:<name>` (§10 `construal_envelope`, phase 5). It
+# can never collide with a session id — a 16-hex token contains no colon — so the
+# producer≠admitter predicate stays sound when an envelope does the admitting.
+ENVELOPE_ADMITTER_RE = re.compile(r"^envelope:[A-Za-z0-9][A-Za-z0-9._-]*$")
+
+
+def construal_key(role, charter):
+    """The deterministic key for one (role, charter) pair: 16 lowercase hex, the same shape
+    as a session id so one id form travels through the whole tool.
+
+    Same role + same charter ⇒ same key; any change to either ⇒ a different key. That is
+    the whole contract: the orchestrator looks for `audit/construals/<key>.md` before
+    dispatching a charter, so a REWORDED charter is a different charter and needs its own
+    construal — a construal admitted for one reading must not silently license another.
+    The role and charter are joined by a NUL byte, which neither can contain, so
+    ('Auditor', 'x y') and ('Auditor x', 'y') cannot collide."""
+    h = hashlib.sha256()
+    h.update((role or "").strip().encode("utf-8"))
+    h.update(b"\0")
+    h.update((charter or "").strip().encode("utf-8"))
+    return h.hexdigest()[:16]
+
+
+def _canon_construal_key(v):
+    return None if is_session_id(v) else f"key '{v}' is not a canonical construal key (16 lowercase hex, from construal_key(role, charter))"
+
+
+def _canon_construal_role(v):
+    # Derived from CANONICAL_NEXT (the §2/§5 actor vocabulary) minus the non-role tokens,
+    # so the role names are declared once for the whole tool and a renamed role cannot
+    # leave a stale second list here.
+    roles = CANONICAL_NEXT - {"human", "—", "-"}
+    return None if v in roles else f"role '{v}' is not a canonical role ({'/'.join(sorted(roles))})"
+
+
+def _canon_construal_status(v):
+    return None if v in CONSTRUAL_STATUSES else f"status '{v}' is not in the construal vocabulary ({'/'.join(sorted(CONSTRUAL_STATUSES))})"
+
+
+def _canon_construal_session(v):
+    return None if is_session_id(v) else f"session '{v}' is not a canonical session id (16 lowercase hex, the shape XCHECK_SESSION_ID / the lock nonce take)"
+
+
+def _canon_construal_admitter(v):
+    # The admitter is either a real session (a party that is not the producer) or a
+    # declared envelope. Anything else is an assertion, not an identity — the same reason
+    # `fixed-by` is format-validated (F-0096): junk does not prove anyone admitted anything.
+    if is_session_id(v) or ENVELOPE_ADMITTER_RE.match(v.strip()):
+        return None
+    return f"admitted-by '{v}' is neither a canonical session id nor an `envelope:<name>` token"
+
+
+def _canon_construal_created(v):
+    return _canon_calendar_date("created", v, " (§4 rule 9)")
+
+
+def _canon_construal_admitted_at(v):
+    return _canon_calendar_date("admitted-at", v, " (§4 rule 9)")
+
+
+# The construal record, declared as DATA in the SAME (in_block, nullable, value-predicate)
+# shape as CANONICAL_SCHEMA and validated by the SAME `_field_gate` dispatcher. Forking a
+# second validator for a second artifact is precisely what CF-0001 spent nine rulings
+# closing; the machinery is reused, not copied.
+CONSTRUAL_SCHEMA = {
+    "key":         (True, False, _canon_construal_key),
+    "role":        (True, False, _canon_construal_role),
+    "charter":     (True, False, None),          # free-form: the charter text as issued
+    "session":     (True, False, _canon_construal_session),
+    "created":     (True, False, _canon_construal_created),
+    "status":      (True, False, _canon_construal_status),
+    "admitted-by": (True, True,  _canon_construal_admitter),
+    "admitted-at": (True, True,  _canon_construal_admitted_at),
+    "envelope":    (True, True,  None),          # free-form: which envelope covered it
+}
+
+
+def load_construal_files(audit_dir: Path):
+    """Every audit/construals/*.md with its own parsed frontmatter (one dict per physical
+    file, each carrying `_file`), mirroring `load_finding_files`. A file with no
+    frontmatter block is recorded as `_malformed` rather than skipped, so lint reports it
+    instead of certifying a silent pass over it (F-0013 shape)."""
+    out = []
+    cdir = audit_dir / "construals"
+    if not cdir.is_dir():
+        return out
+    for f in sorted(cdir.glob("*.md")):
+        text = f.read_text(encoding="utf-8", errors="replace")
+        m = re.match(r"^---\n(.*?)\n---", text, re.S)
+        if not m:
+            out.append({"_file": f.name, "_malformed": True, "_text": text})
+            continue
+        fm, dups, badform = _parse_frontmatter(m.group(1))
+        fm["_file"] = f.name
+        fm["_text"] = text
+        if dups:
+            fm["_dupkeys"] = dups
+        if badform:
+            fm["_badform"] = badform
+        out.append(fm)
+    return out
+
+
+# A `construal_envelope` declaration in the project's AUDIT.md (XCHECK.md §10 declares the
+# key; AUDIT.md instantiates it — the universality boundary §1 names). ONE line, one form:
+#
+#   construal_envelope: <name> roles=<Role>[,<Role>...] recheck-by=YYYY-MM-DD
+#
+# Anything that does not match this whole form parses to NOTHING, which the caller reads as
+# "no envelope" and therefore as "human admission required". LCC C.2 is explicit that a
+# pre-authorization is lawful only while it is typed, operator-issued, dated and defeasible;
+# an envelope that cannot state its own expiry is smuggling with paperwork, so the date is
+# not optional and not defaultable.
+_ENVELOPE_RE = re.compile(
+    r"^\s*construal_envelope\s*:\s*(?P<name>[A-Za-z0-9][A-Za-z0-9._-]*)\s+"
+    r"roles\s*=\s*(?P<roles>[A-Za-z]+(?:\s*,\s*[A-Za-z]+)*)\s+"
+    r"recheck-by\s*=\s*(?P<date>\S+)\s*$")
+
+
+def parse_envelope(audit_dir: Path):
+    """The declared construal envelope from AUDIT.md, as {name, roles, recheck-by}, or None.
+
+    FAIL-CLOSED in every degenerate case — absent, malformed, more than one declaration, an
+    unparseable or impossible date. Returns None then, and None means "no envelope", which
+    means every construal needs human admission. The calendar check is the ONE shared
+    `_canon_calendar_date` (F-0119): a second, weaker date reading here would let
+    `recheck-by: 2026-02-30` stand as a live expiry forever.
+
+    Expiry itself is NOT decided here — this returns the declaration; `envelope_covers`
+    applies it to a role on a date. Keeping the parse and the judgement apart means the
+    selftest can poison each independently."""
+    audit_md = audit_dir / "AUDIT.md"
+    if not audit_md.is_file():
+        return None
+    found = []
+    for line in _read_audit_text(audit_md).splitlines():
+        m = _ENVELOPE_RE.match(line)
+        if m:
+            found.append(m)
+        elif re.match(r"^\s*construal_envelope\s*:", line):
+            return None  # a declaration that does not parse is NOT an envelope (fail-closed)
+    if len(found) != 1:
+        return None  # zero, or two declarations that cannot both be authoritative
+    m = found[0]
+    date = m.group("date")
+    if _canon_calendar_date("recheck-by", date):
+        return None  # malformed or impossible date -> no envelope
+    roles = {r.strip() for r in m.group("roles").split(",") if r.strip()}
+    if not roles or any(_canon_construal_role(r) for r in roles):
+        return None  # an envelope covering a non-role covers nothing
+    return {"name": m.group("name"), "roles": roles, "recheck-by": date}
+
+
+def envelope_covers(envelope, role, today):
+    """True iff `envelope` (from `parse_envelope`) LIVE-covers `role` on `today`.
+
+    Fail-closed: no envelope, a role it does not name, or a `recheck-by` strictly before
+    today all return False. The `recheck-by` date is the last day the envelope stands — on
+    that day it still covers, the day after it does not. `today` is passed in rather than
+    read from the clock so the expiry boundary is testable on both sides."""
+    if not envelope or role not in envelope["roles"]:
+        return False
+    return envelope["recheck-by"] >= today
+
+
+def construal_issues(audit_dir: Path):
+    """Every construal-record violation under `audit/construals/`, as human-readable
+    strings. An absent or empty directory is NOT an error — the mechanism is off by
+    default (§10 `construal_gate`) and a project that never uses it has nothing to fail.
+
+    Three families, each bound to its source:
+
+      - VALUES, through the shared `_field_gate` over CONSTRUAL_SCHEMA — the same
+        dispatcher the canonical record uses, applied to EVERY field including the empty
+        string, so a missing required field cannot skip its predicate (the I-11 hole).
+      - PRODUCER ≠ ADMITTER (LCC F2, §4 rule 9). `status: admitted` requires an
+        `admitted-by` that is present AND different from `session`. This is the whole
+        mechanism in one predicate: the construal is evidence the admitter inspects, never
+        authority the producer grants itself. Absent `admitted-by` fails CLOSED, exactly as
+        `norm-ruling` does at the §8 gate — an admitted status with no named admitter is an
+        assertion that someone approved, not a record that someone did. Weakening this
+        collapses the mechanism into the inversion where the signed construal IS the
+        licence and a construal error becomes an authorized error.
+      - FORM: the five body sections, each required and non-empty, read through the shared
+        ATX/declared-form helpers; and the filename bound to the record's own `key`, so a
+        construal cannot be looked up under one key while claiming another."""
+    issues = []
+    for fm in load_construal_files(audit_dir):
+        fname = fm["_file"]
+        if fm.get("_malformed"):
+            issues.append(f"construals/{fname}: no frontmatter block — the construal record is unreadable (§4 rule 9)")
+            continue
+        for dk in sorted(set(fm.get("_dupkeys") or [])):
+            issues.append(f"construals/{fname}: frontmatter has duplicate key {dk!r} — a last-wins collapse is a corrupt record (F-0103)")
+        for bf in sorted(set(fm.get("_badform") or [])):
+            issues.append(f"construals/{fname}: field {bf!r} is not in a declared form (CF-0001 ruling #9)")
+        for field, (_in_block, nullable, validate) in CONSTRUAL_SCHEMA.items():
+            err = _field_gate(field, nullable, validate)((fm.get(field) or "").strip())
+            if err:
+                issues.append(f"construals/{fname}: {err}")
+        key = (fm.get("key") or "").strip()
+        if key and fname != f"{key}.md":
+            issues.append(f"construals/{fname}: filename does not match the record's own key '{key}' (expected {key}.md)")
+        if (fm.get("status") or "").strip() == "admitted":
+            admitter = (fm.get("admitted-by") or "").strip()
+            session = (fm.get("session") or "").strip()
+            if not admitter:
+                issues.append(f"construals/{fname}: status is `admitted` but `admitted-by` is empty — fail-closed: an admission with no named admitter is an assertion, not a record (§4 rule 9, LCC F2)")
+            elif admitter == session:
+                issues.append(f"construals/{fname}: `admitted-by` equals `session` — SELF-ADMISSION is refused; the construal is evidence the admitter inspects, never authority the producer grants itself (§4 rule 9, LCC F2)")
+        for sec in CONSTRUAL_SECTIONS:
+            if not section_declared_content(fm.get("_text") or "", sec):
+                issues.append(f"construals/{fname}: section `{sec}` is missing or empty (§4 rule 9 — all five are required)")
+    return issues
 
 
 # The LEDGER column schema, declared ONCE (§2/N1: rows follow one fixed format
@@ -796,6 +1081,83 @@ def canonical_record_issues(audit_dir: Path):
             issues.append(f"{r['id']}: ledger status '{r['status']}' not in the §5 lifecycle vocabulary")
     issues += next_value_issues(audit_dir)
     issues += cf_member_identity_issues(audit_dir)  # F-0125
+    issues += refusal_section_issues(audit_dir)
+    return issues
+
+
+ADMITTED_SCOPE_PARTS = ("### Covers", "### Does not cover")
+
+
+def admitted_scope_issues(audit_dir: Path):
+    """Findings in status `fixed` that do not declare the scope their fix admits (§7).
+
+    Active ONLY under §10 `scope_typing`; the caller decides whether to run it, and with
+    the flag off this project's behaviour is unchanged. The scope of the check is
+    deliberately narrow and stated here so the code does not promise more than it does:
+    it verifies that a scope DECLARATION exists and carries both halves. Whether the
+    declaration is TRUE of the fix — the demanded ⊆ admitted judgement — is the Verifier's
+    work (§7); no predicate here reads the fixed code.
+
+    Both halves are required. `### Covers` alone is the promise-width shape this whole
+    mechanism exists to catch: it reads as complete while admitting nothing about its
+    limits, which is the silent gap §4 rule 5 forbids one layer over. `closed` findings
+    are NOT checked — the 131 terminal records were closed under the old norm, and
+    retroactively invalidating them would be history laundering.
+
+    Structure is read through the shared ATX/declared-form helpers (`_atx_heading_bodies`,
+    `_declared_form_content`), never a substring search: twelve rounds of F-0130 are the
+    reason a structural claim here is checked structurally."""
+    issues = []
+    fdir = audit_dir / "findings"
+    for fm in load_finding_files(audit_dir):
+        if fm.get("_malformed") or fm.get("status") != "fixed":
+            continue
+        fid = fm.get("id") or fm["_file"]
+        if not (fm.get("admitted-scope") or "").strip():
+            issues.append(
+                f"{fid}: status is `fixed` but `admitted-scope` is empty — §10 `scope_typing` is on,"
+                f" so a fix must declare which routes/inputs/call sites its guarantee covers (§7)")
+        f = fdir / fm["_file"]
+        text = f.read_text(encoding="utf-8", errors="replace") if f.is_file() else ""
+        if not has_atx_heading(text, "## Admitted scope"):
+            issues.append(
+                f"{fid}: status is `fixed` but there is no `## Admitted scope` section (§7, §10 `scope_typing`)")
+            continue
+        for part in ADMITTED_SCOPE_PARTS:
+            if not section_declared_content(text, part):
+                issues.append(
+                    f"{fid}: `## Admitted scope` is missing or empty under `{part}`"
+                    + (" — the residue half is mandatory: a fix that declares coverage and no"
+                       " limit reads as complete while admitting nothing (§7)"
+                       if part == "### Does not cover" else " (§7)"))
+    return issues
+
+
+def refusal_section_issues(audit_dir: Path):
+    """Findings whose `refusal` reason code stands alone, with no `## Refusal` prose.
+
+    XCHECK.md §5 makes the two halves one record: the frontmatter carries the reason from
+    the closed vocabulary, the section carries what is actually missing, and the reasons
+    are what a successor attempt inherits. A bare code inherits nothing — it names a
+    category and states no obstacle, which is the silent gap §4 rule 5 forbids one layer
+    over. Emptiness is decided by the shared declared-form classifier (F-0111), so an
+    HTML-comment placeholder — the exact shape a role copies out of templates/finding.md —
+    counts as empty, and there is no second answer to "is this section filled?".
+
+    Folded into `canonical_record_issues`, so the decision path and metrics fail closed on
+    it exactly as they do on an out-of-vocabulary reason: a half-recorded refusal must not
+    reach the gate message as though it carried a reason."""
+    issues = []
+    fdir = audit_dir / "findings"
+    for fm in load_finding_files(audit_dir):
+        if fm.get("_malformed") or not (fm.get("refusal") or "").strip():
+            continue
+        f = fdir / fm["_file"]
+        text = f.read_text(encoding="utf-8", errors="replace") if f.is_file() else ""
+        if not section_declared_content(text, "## Refusal"):
+            issues.append(
+                f"{fm.get('id') or fm['_file']}: `refusal` is set but the `## Refusal` section is missing or empty"
+                f" — §5 requires the reason code AND the prose stating what is missing (a bare code carries nothing forward)")
     return issues
 
 
@@ -979,6 +1341,45 @@ def _schema_value_coverage_issues(section2_values, schema=None, delegated=None):
     return issues
 
 
+# §2 fields whose declared value is a CLOSED ENUMERATION, mapped to the ONE module
+# constant that holds it. `_schema_enum_binding_issues` proves the two agree, so the
+# vocabulary is declared once in code and the §2 prose is a BOUND mirror rather than a
+# second declaration that can drift (the CF-0001 single-source discipline, applied to
+# an enumeration's MEMBERS instead of to a field name). `null` is a nullability marker,
+# not a member, so it is stripped before comparison; a field whose §2 value carries no
+# `|` alternatives (a fixed default like `status: reported`, a `<placeholder>`) is not
+# an enumeration and is not listed here.
+SECTION2_ENUM_FIELDS = {
+    "severity": SEVERITIES,
+    "refusal": REFUSAL_REASONS,
+}
+
+
+def _schema_enum_binding_issues(section2_values, enum_fields=None):
+    """Bind every §2-declared closed enumeration to its module constant. A §2 value that
+    offers alternatives (`a | b | c`) IS the norm's statement of the vocabulary; the code
+    validates against a set. If the two differ, one of them is silently wider than the
+    other — a member the norm allows but the predicate rejects, or a member the predicate
+    accepts that the norm never declared. Both are promise-width defects (§7), and both
+    are invisible to the name-level meta-check, which only proves the FIELD exists in
+    both places. `enum_fields` defaults to the live map; the selftest passes a mutated one
+    to prove the guard bites."""
+    enum_fields = SECTION2_ENUM_FIELDS if enum_fields is None else enum_fields
+    issues = []
+    for field, vocab in enum_fields.items():
+        raw = section2_values.get(field)
+        if raw is None:
+            continue  # a §2<->table name mismatch is already reported by _schema_meta_diff
+        declared = {t.strip() for t in raw.split("|")} - {"null", ""}
+        if declared != set(vocab):
+            missing = sorted(set(vocab) - declared)
+            extra = sorted(declared - set(vocab))
+            issues.append(
+                f"canonical field '{field}': the XCHECK.md §2 enumeration and the code vocabulary disagree"
+                f" (§2 lacks {missing}, code lacks {extra}) — one closed vocabulary, declared once (CF-0001 meta-check)")
+    return issues
+
+
 def section2_field_nullable_map(xcheck_text):
     """{field: nullable?} DERIVED from the XCHECK.md §2 canonical-record yaml block, or None
     when no block is present. A field is nullable (an empty/absent value is legitimate) IFF
@@ -1058,6 +1459,7 @@ def canonical_schema_meta_issues(xcheck_path: Path):
     issues = _schema_meta_diff(fields)
     issues += _schema_value_coverage_issues(section2_canonical_field_values(text) or {})
     issues += canonical_schema_nullability_issues(section2_field_nullable_map(text) or {})
+    issues += _schema_enum_binding_issues(section2_canonical_field_values(text) or {})
     return issues
 
 
@@ -1580,39 +1982,106 @@ def _coverage_marker(text, label):
         # HTML comments are invisible and multi-line — blank every `<!-- ... -->` span
         # before the line-based form check (they cannot be judged per line).
         segment = re.sub(r"<!--.*?-->", " ", m.group("rest") + "\n" + text[m.end():], flags=re.S)
-        prev_bracket = False  # did the previous non-blank body line open a ref def (`[label]:`)?
-        first = True
-        for line in segment.splitlines():
-            s = line.strip()
-            if not s:
-                prev_bracket = False  # a blank line closes any ref-def continuation
-                first = False
-                continue
-            if not first:
-                # a new `## ` section heading or a following COVERED/NOT COVERED marker
-                # ends THIS marker's body — content past the boundary is not its report.
-                if re.match(r"^#{1,6}[ \t]", s):
-                    break
-                if re.match(r"^(?:\*\*\s*)?(?:NOT\s+)?COVERED\b", s, re.I):
-                    break
-            m = _LIST_ITEM_RE.match(s)
-            if m:
-                # a list item counts only with REPORTABLE TEXT after the marker; a bare
-                # `-` / `1.` renders to an empty <li> and reports nothing (F-0111).
-                if _REPORTABLE_RE.search(s[m.end():]):
-                    return True
-                prev_bracket = False
-                first = False
-                continue
-            # a prose line of declared content form: not a ref-def / raw-HTML / heading
-            # opener, not the continuation of a preceding reference definition, and
-            # carrying reportable text (a letter/digit) — a punctuation-only line reports
-            # nothing and is a silent gap (F-0111 human ruling 2026-07-28, third ruling).
-            if s[0] not in "[<#" and not prev_bracket and _REPORTABLE_RE.search(s):
-                return True
-            prev_bracket = bool(_REF_DEF_OPENER_RE.match(s))
-            first = False
+        if _declared_form_content(segment, first_line_is_marker_tail=True, marker_stop=True):
+            return True
     return False
+
+
+def _declared_form_content(segment, first_line_is_marker_tail=False, marker_stop=False):
+    """True iff `segment` — a marker or section BODY whose `<!-- ... -->` spans are
+    already blanked — carries at least one line of DECLARED CONTENT FORM.
+
+    This is the ONE line-form classifier the F-0111 rule is expressed in, shared by the
+    coverage-marker check (§4 rule 5) and the `## Refusal` section check (§5). Splitting
+    it into two implementations is exactly the forked-validation anti-pattern CF-0001
+    closed: two answers to "is this section empty?" drift, and a section that one call
+    site calls a silent gap the other calls filled.
+
+    A body line counts iff it is a markdown LIST ITEM (`-`/`*`/`+`/`N.`) OR a PROSE line
+    that does not begin with `[`, `<`, or `#` and is not the wrapped destination/title
+    continuation of a `[label]:` link-reference definition — and, in EITHER case, carries
+    REPORTABLE TEXT (a letter or digit). Content is decided by POSITIVE FORM, never by
+    recognizing invisibility: the invisible set is unbounded and cannot be closed by
+    enumeration, the visible set is declared and finite (F-0111 human ruling 2026-07-28).
+
+    `first_line_is_marker_tail` — the first line is the remainder of the marker line
+    itself (`COVERED: ...`), so the body-boundary stops do not apply to it.
+    `marker_stop` — also end the body at a following COVERED / NOT COVERED marker; a
+    coverage marker's body runs to the next marker, while a section body handed in
+    already bounded by its own heading needs no such stop."""
+    prev_bracket = False  # did the previous non-blank body line open a ref def (`[label]:`)?
+    first = first_line_is_marker_tail
+    for line in segment.splitlines():
+        s = line.strip()
+        if not s:
+            prev_bracket = False  # a blank line closes any ref-def continuation
+            first = False
+            continue
+        if not first:
+            # a new `## ` section heading or a following COVERED/NOT COVERED marker
+            # ends THIS body — content past the boundary is not its report.
+            if re.match(r"^#{1,6}[ \t]", s):
+                break
+            if marker_stop and re.match(r"^(?:\*\*\s*)?(?:NOT\s+)?COVERED\b", s, re.I):
+                break
+        m = _LIST_ITEM_RE.match(s)
+        if m:
+            # a list item counts only with REPORTABLE TEXT after the marker; a bare
+            # `-` / `1.` renders to an empty <li> and reports nothing (F-0111).
+            if _REPORTABLE_RE.search(s[m.end():]):
+                return True
+            prev_bracket = False
+            first = False
+            continue
+        # a prose line of declared content form: not a ref-def / raw-HTML / heading
+        # opener, not the continuation of a preceding reference definition, and
+        # carrying reportable text (a letter/digit) — a punctuation-only line reports
+        # nothing and is a silent gap (F-0111 human ruling 2026-07-28, third ruling).
+        if s[0] not in "[<#" and not prev_bracket and _REPORTABLE_RE.search(s):
+            return True
+        prev_bracket = bool(_REF_DEF_OPENER_RE.match(s))
+        first = False
+    return False
+
+
+def _atx_heading_bodies(text, heading):
+    """Every body that follows `heading` (e.g. `## Refusal`, `### Covers`) read as a REAL
+    ATX heading line, as a list of body strings. Empty list == the heading is not present
+    as document structure.
+
+    Structure is read exactly the way the template guard reads it, through the same two
+    shared rules and no others: non-rendered blocks — fenced code and HTML comment blocks
+    — are stripped FIRST by the one `_strip_nonstructure`, so a commented-out or
+    ```-fenced copy of a heading is not a heading; and the heading line itself must pass
+    the one `_atx_indent_ok` CommonMark leading-indent rule and equal the needle as a
+    WHOLE line, never as a substring (F-0130). A body runs to the next ATX heading of any
+    level, so a `### Covers` body stops at `### Does not cover`."""
+    lines = _strip_nonstructure(text).split("\n")
+    out = []
+    for i, line in enumerate(lines):
+        d = _atx_indent_ok(line)
+        if d is None or d.rstrip() != heading:
+            continue
+        body = []
+        for nxt in lines[i + 1:]:
+            nd = _atx_indent_ok(nxt)
+            if nd is not None and re.match(r"^#{1,6}[ \t]", nd):
+                break
+            body.append(nxt)
+        out.append("\n".join(body))
+    return out
+
+
+def has_atx_heading(text, heading):
+    """True iff `heading` is present as real document structure (see `_atx_heading_bodies`)."""
+    return bool(_atx_heading_bodies(text, heading))
+
+
+def section_declared_content(text, heading):
+    """True iff `text` carries `heading` as a REAL ATX heading whose body holds at least
+    one line of declared content form — the one `_declared_form_content` classifier the
+    coverage check uses (F-0111). No second parser, no substring test."""
+    return any(_declared_form_content(b) for b in _atx_heading_bodies(text, heading))
 
 
 def passes_without_coverage(audit_dir: Path):
@@ -1654,6 +2123,8 @@ CONF_DEFAULTS = {
     "session_note": "",
     "triage_batch_cap": "0",
     "push_after_commit": "",
+    "scope_typing": "off",
+    "construal_gate": "off",
 }
 NUMERIC_CONF = {
     "batch_size": 1,
@@ -1661,6 +2132,22 @@ NUMERIC_CONF = {
     "loop_progress_limit": 0,
     "triage_batch_cap": 0,
 }
+# BOOLEAN config keys, coerced+validated at the SAME Conf boundary as the numeric ones
+# (F-0113 human ruling: the guarantee travels with the value, not with the spelling of a
+# call site). A consumer reading one of these gets a real `bool`, so no `in ("1","true",
+# …)` membership test or bare truthiness survives at a call site — the mechanism-gating
+# flags decide whether a whole check runs, and a typo silently meaning `off` would leave
+# the operator believing a gate is armed when it is not.
+#
+# `push_after_commit` is DELIBERATELY not here. Its README §8 contract is lenient by
+# design — anything that is not an affirmative spelling means "do not push" — which is
+# the fail-SAFE reading for an outbound side effect, the opposite of the fail-CLOSED
+# reading the gate flags need. Migrating it would change documented behaviour, so it
+# stays on its own contract and this comment records that the difference is declared,
+# not drift.
+BOOLEAN_CONF = frozenset({"scope_typing", "construal_gate"})
+_CONF_TRUE = frozenset({"1", "true", "yes", "on"})
+_CONF_FALSE = frozenset({"0", "false", "no", "off"})
 
 
 def conf_int(conf, key, default, minimum):
@@ -1685,6 +2172,45 @@ def conf_int(conf, key, default, minimum):
         raise SystemExit(
             f"orchestrator.conf: {key} must be an integer >= {minimum}, got {str(raw)!r}")
     return val
+
+
+def conf_bool(conf, key, default):
+    """Coerce one raw orchestrator.conf value to a real bool, failing with an ADDRESSED
+    operator error instead of silently reading as `off` (F-0113, applied to the boolean
+    keys). An empty/whitespace-only value falls back to the key's default; every other
+    value must be a declared affirmative or negative spelling. Anything else — `of`,
+    `ON!`, `maybe` — is REFUSED rather than coerced, because these keys gate whether a
+    check runs at all: an unrecognised value read as `off` is a gate the operator
+    believes is armed and is not. Reads with `dict.get` (the base accessor) so it is safe
+    to call from the Conf boundary without re-entering Conf.get/__getitem__."""
+    raw = dict.get(conf, key, default)
+    if raw is None or str(raw).strip() == "":
+        raw = default
+    v = str(raw).strip().lower()
+    if v in _CONF_TRUE:
+        return True
+    if v in _CONF_FALSE:
+        return False
+    raise SystemExit(
+        f"orchestrator.conf: {key} must be one of "
+        f"{'/'.join(sorted(_CONF_TRUE))} or {'/'.join(sorted(_CONF_FALSE))}, got {str(raw)!r}")
+
+
+def conf_flag(conf, key):
+    """Read a BOOLEAN_CONF key as a real bool from ANY mapping — a `Conf` (which already
+    coerces) or a plain dict (which a caller or a test may hand in).
+
+    This exists because the F-0113 trap has one more mouth than the Conf boundary closes:
+    `conf.get("construal_gate", "off")` on a PLAIN dict returns the STRING `"off"`, and
+    `if "off":` is True. A flag read that way is permanently on — the exact
+    bare-truthiness-at-the-consumer shape the human ruling forbade, just with a string
+    instead of an int. Every gate-flag read goes through here, so the value a consumer
+    branches on is a bool no matter what kind of mapping it came from."""
+    default = CONF_DEFAULTS.get(key, "off")
+    raw = conf.get(key, default)
+    if isinstance(raw, bool):
+        return raw
+    return conf_bool({key: raw}, key, default)
 
 
 class Conf(collections.abc.Mapping):
@@ -1719,12 +2245,17 @@ class Conf(collections.abc.Mapping):
     def __getitem__(self, key):
         if key in NUMERIC_CONF and key in self._raw:
             return conf_int(self._raw, key, CONF_DEFAULTS.get(key, "0"), NUMERIC_CONF[key])
+        if key in BOOLEAN_CONF and key in self._raw:
+            return conf_bool(self._raw, key, CONF_DEFAULTS.get(key, "off"))
         return self._raw[key]
 
     def get(self, key, default=None):
         if key in NUMERIC_CONF and key in self._raw:
             d = default if default is not None else CONF_DEFAULTS.get(key, "0")
             return conf_int(self._raw, key, d, NUMERIC_CONF[key])
+        if key in BOOLEAN_CONF and key in self._raw:
+            d = default if default is not None else CONF_DEFAULTS.get(key, "off")
+            return conf_bool(self._raw, key, d)
         return self._raw.get(key, default)
 
     def __contains__(self, key):
@@ -1774,13 +2305,37 @@ def load_conf(audit_dir: Path, write_default: bool = False):
 # list. There is no second copy to drift against — a divergence is now impossible
 # to write, not merely caught. Highest first; each entry is one branch of decide().
 DECIDE_PRIORITY = [
-    "needs-human", "verify", "reopened", "resume", "accepted-cf",
+    "needs-human", "refusal", "construal", "verify", "reopened", "resume", "accepted-cf",
     "accepted-f", "triage-cap", "audit", "triage", "plan-completeness",
     "disputed", "inconsistent", "deferred-debt", "done",
 ]
 
 
-def decide(rows, unchecked_passes, audit_md_exists, batch_size=8, triage_cap=0, plan_complete=True):
+def decide(rows, unchecked_passes, audit_md_exists, batch_size=8, triage_cap=0,
+           plan_complete=True, refusals=None, construal=None):
+    """Return (kind, detail) — `_decide_core`'s lifecycle decision, with the §4 rule 9
+    CONSTRUAL gate applied to a dispatch.
+
+    The gate is a FILTER on a `run-*` outcome, not a lifecycle branch: what the cycle owes
+    is unchanged by it, only whether the charter may be handed to an agent yet. So the core
+    decides first, `role_and_charter` names the charter that is about to be dispatched, and
+    `construal` — a callable `(role, charter) -> (kind, detail) | None` — gets to replace
+    the outcome with `run-construal` or `stop-construal`. Its position in DECIDE_PRIORITY
+    (below the human gates, above every dispatch branch) is exactly that: it never preempts
+    a halt the human already owns, and it always preempts handing work to an agent.
+
+    `construal=None` (the default, and what a gate-off caller passes) makes this the
+    identity, so the shipped default behaviour is `_decide_core`'s, byte for byte."""
+    kind, detail = _decide_core(rows, unchecked_passes, audit_md_exists, batch_size,
+                               triage_cap, plan_complete, refusals)
+    if construal is None or not kind.startswith("run-"):
+        return kind, detail
+    role, charter = role_and_charter(kind, detail)
+    verdict = construal(role, charter)
+    return verdict if verdict else (kind, detail)
+
+
+def _decide_core(rows, unchecked_passes, audit_md_exists, batch_size=8, triage_cap=0, plan_complete=True, refusals=None):
     """Return (kind, detail). kind: stop-* | run-* | done.
 
     Priority, highest first — each branch below is one step. The order is ONE
@@ -1811,7 +2366,17 @@ def decide(rows, unchecked_passes, audit_md_exists, batch_size=8, triage_cap=0, 
     triaged even while the plan is partial: plan-completeness sits AFTER the
     `reported`->triage branch, not before it. Defaults True so callers that
     already guarantee a complete plan (and the decision selftest) are
-    unaffected; production passes audit_plan_complete()."""
+    unaffected; production passes audit_plan_complete().
+
+    `refusals` ({finding id: reason code}, §5) carries the LIVE typed refusals —
+    findings whose assigned role accepted the charter and recorded that it cannot
+    execute it. Re-dispatching the same charter over unchanged state would replay
+    the refusal forever (the F-0118 shape: a role that halts without writing moves
+    no counter), so a live refusal halts the cycle for the human exactly as the §8
+    norm-ratification block does. It sits BELOW needs-human — a reopen-limit breach
+    is the older, harder gate — and ABOVE every dispatch branch, because every one
+    of them would hand the refused work straight back. Defaults to None (no
+    refusals), so a caller that does not track them gets byte-identical behaviour."""
     for r in rows:
         # CF-0001 (I-5): the `⚠ needs-human` flag is legal ONLY on a finding that
         # actually reached the reopen limit — §63: "The Verifier appends ⚠
@@ -1823,6 +2388,14 @@ def decide(rows, unchecked_passes, audit_md_exists, batch_size=8, triage_cap=0, 
         # control field caught by lint, not a stop signal.
         if r["status"] == "reopened" and NEEDS_HUMAN_NEXT_RE.match((r["next"] or "").strip()):
             return "stop-needs-human", r["id"]
+
+    # §5 typed refusal: the assigned role accepted this charter and recorded that it
+    # cannot execute it. Every dispatch branch below would hand the same charter back
+    # unchanged, so the cycle stops here for the human, carrying the reason code.
+    for r in rows:
+        reason = (refusals or {}).get(r["id"])
+        if reason:
+            return "stop-refusal", (r["id"], reason)
 
     fixed = [r["id"] for r in rows if r["status"] == "fixed"]
     if fixed:
@@ -1900,11 +2473,22 @@ def decide(rows, unchecked_passes, audit_md_exists, batch_size=8, triage_cap=0, 
 # F-0077 (human ruling #4): render the docstring's priority line FROM the one
 # literal. Prose and data are now the same object — the line cannot say an order
 # DECIDE_PRIORITY does not hold. Guarded because `python -OO` strips docstrings.
-if decide.__doc__:
-    decide.__doc__ = decide.__doc__.replace("{PRIORITY}", " > ".join(DECIDE_PRIORITY))
+if _decide_core.__doc__:
+    _decide_core.__doc__ = _decide_core.__doc__.replace("{PRIORITY}", " > ".join(DECIDE_PRIORITY))
 
 
 def role_and_charter(kind, detail):
+    if kind == "run-construal":
+        # §4 rule 9: the SAME role, a different charter — write your construal and stop.
+        # `detail` is (role, original charter, key, path) as the gate resolved it.
+        role, orig, key, path = detail
+        return role, (
+            f"Before any effect on the material, write your OPERATIONAL CONSTRUAL of this "
+            f"charter to `{path}` (copy audit/templates/construal.md), then STOP without "
+            f"touching anything else. Set `key: {key}`, `role: {role}`, `status: proposed`, "
+            f"`session: <your XCHECK_SESSION_ID>`, and leave `admitted-by` null — you must "
+            f"NOT admit your own construal (§4 rule 9). Fill all five sections. "
+            f"The charter you are construing: {orig}")
     if kind == "run-planner":
         return "Planner", None
     if kind == "run-auditor":
@@ -2241,7 +2825,7 @@ def build_cmd(conf, role, prompt):
     return parts + [prompt]
 
 
-def run_session(project: Path, conf, role, charter, dry_run=False, lock=None):
+def run_session(project: Path, conf, role, charter, dry_run=False, lock=None, construal=None):
     """Run one agent session. If `lock` is given, the caller already holds the
     writing lock and this call runs (subprocess + courier) inside it — the whole
     next-transaction is serialized (F-0009). If `lock` is None (standalone call),
@@ -2313,6 +2897,15 @@ def run_session(project: Path, conf, role, charter, dry_run=False, lock=None):
         orch = [f"XCHECK_SESSION_ID={session_id}"]
         if token:
             orch.append(f"XCHECK_LOCK_INHERITED={token}")
+        # §4 rule 9: the construal key for THIS charter travels the same two channels as
+        # the lock nonce, and for the same F-0093 reason — a sandboxed command runner shows
+        # the agent nothing of this child CLI's environment, so env alone does not reach it
+        # and the role-prompt line always does. Without the key the role cannot name the
+        # file the gate is waiting for, and would write its construal under a key the
+        # orchestrator never looks up.
+        if construal:
+            child_env["XCHECK_CONSTRUAL_KEY"] = construal
+            orch.append(f"XCHECK_CONSTRUAL_KEY={construal}")
         child_prompt = prompt + (
             "\n\n[Orchestration context — the orchestrator (bin/xcheck) set these; "
             "your shell `env` may not expose them, so take their values from this "
@@ -2800,6 +3393,66 @@ def norm_ruling_pending(fm: dict):
     return not NORM_RULING_TOKEN_RE.match(val)
 
 
+def construal_gate_resolver(audit_dir: Path, today=None):
+    """The §4 rule 9 gate as a callable `(role, charter) -> (kind, detail) | None`, for
+    `decide` to apply to a dispatch. `None` means "nothing to stop for — dispatch".
+
+    Three outcomes, in order:
+
+      - no construal file for this charter's key      -> `run-construal` (write it, stop)
+      - a construal that is not `admitted`            -> `stop-construal` (human admits)
+      - an admitted construal                         -> None (dispatch the real charter)
+
+    A LIVE envelope covering the role short-circuits the middle case: the orchestrator
+    admits the `proposed` construal itself, recording `admitted-by: envelope:<name>` and
+    `admitted-at`. That token can never equal a session id (a 16-hex token holds no colon),
+    so the phase-4 producer≠admitter predicate still holds under an envelope — the envelope
+    is a different admitter, not the producer wearing a hat.
+
+    FAIL-CLOSED throughout. An INVALID construal record (`construal_issues` non-empty for
+    that file) is treated as no admission at all, not as a technicality: routing work off a
+    record the tool itself calls corrupt is how a misread charter becomes authorized work.
+    An absent, malformed or expired envelope is simply no envelope."""
+    today = today or datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+    def resolve(role, charter):
+        key = construal_key(role, charter or "")
+        path = audit_dir / "construals" / f"{key}.md"
+        rel = f"audit/construals/{key}.md"
+        if not path.is_file():
+            return "run-construal", (role, charter, key, rel)
+        bad = [i for i in construal_issues(audit_dir) if i.startswith(f"construals/{key}.md:")]
+        if bad:
+            return "stop-construal", (role, charter, rel, "the construal record is invalid: " + bad[0].split(": ", 1)[-1])
+        fm = next((f for f in load_construal_files(audit_dir) if f.get("_file") == f"{key}.md"), {})
+        status = (fm.get("status") or "").strip()
+        if status == "admitted":
+            return None
+        if status == "proposed":
+            env = parse_envelope(audit_dir)
+            if envelope_covers(env, role, today):
+                _admit_construal(path, env["name"], today)
+                return None
+            return "stop-construal", (role, charter, rel, "it is `proposed` and no live envelope covers it")
+        return "stop-construal", (role, charter, rel, f"its status is `{status}`, not `admitted`")
+
+    return resolve
+
+
+def _admit_construal(path: Path, envelope_name, today):
+    """Record an ENVELOPE admission on a proposed construal, in place.
+
+    Writes only the three admission fields; everything else — including `session`, the
+    producer's identity — is left exactly as the producer wrote it, so the
+    producer≠admitter check reads the same two values afterwards that it read before."""
+    text = path.read_text(encoding="utf-8", errors="replace")
+    for field, value in (("status", "admitted"),
+                         ("admitted-by", f"envelope:{envelope_name}"),
+                         ("admitted-at", today)):
+        text = re.sub(rf"(?m)^{re.escape(field)}\s*:.*$", f"{field}: {value}", text, count=1)
+    path.write_text(text, encoding="utf-8")
+
+
 def state_and_decision(project: Path, conf):
     audit = project / "audit"
     rows, fnd = effective_rows(audit)  # F-0005: reconcile with finding-file truth
@@ -2853,11 +3506,27 @@ def state_and_decision(project: Path, conf):
         batch = int(limits["remediation_batch_size"])
     else:
         batch = int(conf.get("batch_size", "8"))
+    # §5 typed refusal: a role ACCEPTED the charter and recorded that it cannot execute
+    # it. The reason is durable state on the finding file (like `blocked`), not a status,
+    # so the ledger row still shows the work as owed — which is the point: the charter
+    # stays in force. A refusal counts as LIVE only while the finding is non-terminal; on
+    # a closed/rejected/withdrawn record it is history, not a standing obstacle.
+    live_refusals = {}
+    for r in rows:
+        if r["status"] in TERMINAL:
+            continue
+        reason = ((fnd.get(r["id"], {}) or {}).get("refusal") or "").strip()
+        if reason:
+            live_refusals[r["id"]] = reason
     kind, detail = decide(
         rows, unchecked, (audit / "AUDIT.md").is_file(),
         batch, int(conf.get("triage_batch_cap", "0")),
         # F-0077: 'planning done' = a COMPLETE plan (§3), not mere file existence.
         plan_complete=audit_plan_complete(audit),
+        refusals=live_refusals,
+        # §4 rule 9 / §10 `construal_gate`: None when the flag is off, so decide() is the
+        # identity on the core decision and default behaviour is unchanged.
+        construal=(construal_gate_resolver(audit) if conf_flag(conf, "construal_gate") else None),
     )
     # F-0096: enforce Verifier ≠ fixer BEFORE dispatch (§3 hard rule). Routing by
     # `status == fixed` alone does not prove the next session is independent; the
@@ -3014,7 +3683,14 @@ def cmd_next(project: Path, conf, dry_run):
         role, charter = role_and_charter(kind, detail)
         if lock:
             lock.relabel(role)
-        rc = run_session(project, conf, role, charter, dry_run, lock=lock)
+        # §4 rule 9: hand the child the construal key for the charter it is about to work
+        # on. For a `run-construal` dispatch that key is the one the gate resolved (the
+        # ORIGINAL charter's key, not a key of the write-and-stop instruction); for an
+        # ordinary dispatch under the gate it is this charter's own key. None with the gate
+        # off, so nothing is injected and the child prompt is unchanged.
+        ckey = (detail[2] if kind == "run-construal"
+                else (construal_key(role, charter or "") if conf_flag(conf, "construal_gate") else None))
+        rc = run_session(project, conf, role, charter, dry_run, lock=lock, construal=ckey)
     finally:
         # F-0114: name any mixed-ownership handoff on EVERY exit path (success, stop-error,
         # early gate) — a `finally` so it can never be skipped by whichever branch returns.
@@ -3155,6 +3831,12 @@ def report_gate(kind, detail):
         print(f"gate: ⚠ needs-human on {detail} — the human decides (see the finding file)")
     elif kind == "stop-norm-ratification":
         print(f"gate: norm-ratification on {detail} — a class fix is blocked at the §8 gate; the norm owner (human, NOT Triage) sets the CF's `norm-ruling` frontmatter field to the winning norm id (e.g. N1 or N1-over-N4) — fail-closed, a `## Norm ruling` note alone does not lift it — then a Remediator resumes")
+    elif kind == "stop-refusal":
+        _fid, _reason = detail
+        print(f"gate: refusal on {_fid} — reason `{_reason}` (§5). The role accepted this charter and could not execute it; the charter STAYS IN FORCE and the finding's status is unchanged. Read the finding's `## Refusal` section, then remove the obstacle it names (supply the material, resolve the dependency, narrow or reword the charter, rule on the norm conflict) and clear the `refusal:` frontmatter field so the same charter is dispatched again — re-running it untouched only replays the same refusal")
+    elif kind == "stop-construal":
+        _role, _charter, _path, _why = detail
+        print(f"gate: construal on the {_role} charter — {_why}. The construal is EVIDENCE, never authority: the producing session may not admit its own (§4 rule 9). Read `{_path}`, and if it is a faithful reading of the charter set `status: admitted`, `admitted-by: <your session id>` (never the producer's) and `admitted-at: <date>`; if it is not, fix the CHARTER rather than the construal — the misreading is the finding. A `construal_envelope` in AUDIT.md can pre-authorize a role, but only with a live `recheck-by` date. Charter: {_charter}")
     elif kind == "stop-ledger-structure":
         print(f"stop: {detail} (F-0123) — a missing/empty/headerless ledger is lost durable state, not a clean zero-finding audit. Restore the finding table before the cycle continues.")
     elif kind == "stop-inconsistent":
@@ -3648,9 +4330,16 @@ def selftest():
     # pass is triaged even under an incomplete plan.
     # (higher>lower, rows, unchecked, exists, triage_cap, plan_complete, kind, detail)
     _adjacency = [
-        ("needs-human>verify",
-         rows(("F-0001", "reopened", "human ⚠ needs-human"), ("F-0002", "fixed", "Verifier")),
+        ("needs-human>refusal",
+         rows(("F-0001", "reopened", "human ⚠ needs-human"), ("F-0002", "accepted", "Remediator")),
          [], True, 0, True, "stop-needs-human", "F-0001"),
+        ("refusal>construal",
+         rows(("F-0001", "accepted", "Remediator"), ("F-0002", "fixed", "Verifier")),
+         [], True, 0, True, "stop-refusal", ("F-0001", "material-missing")),
+        ("construal>verify",
+         rows(("F-0001", "fixed", "Verifier"), ("F-0002", "reopened", "Remediator")),
+         [], True, 0, True, "stop-construal", ("Verifier", "every finding in status fixed (F-0001)",
+                                               "audit/construals/x.md", "test gate")),
         ("verify>reopened",
          rows(("F-0001", "fixed", "Verifier"), ("F-0002", "reopened", "Remediator")),
          [], True, 0, True, "run-verifier", ["F-0001"]),
@@ -3702,8 +4391,24 @@ def selftest():
     print(f"{'PASS' if ok else 'FAIL'}: priority table covers every DECIDE_PRIORITY pair by name (F-0077 ruling #4)"
           + ("" if ok else f" -> missing={_missing} extra={_extra}"))
     failed += 0 if ok else 1
+    # The two refusal pairs need a LIVE refusal in the input; every other pair is decided
+    # without one. Keyed by pair name rather than widened into all thirteen tuples, so the
+    # adjacency table stays one shape and the refusal input is visible where it applies.
+    _ADJ_REFUSALS = {
+        "needs-human>refusal": {"F-0002": "material-missing"},
+        "refusal>construal": {"F-0001": "material-missing"},
+    }
+    # The construal pair needs a gate that STOPS; every other pair passes construal=None
+    # (gate off), which is decide()'s identity case and the shipped default.
+    _ADJ_CONSTRUAL = {
+        "refusal>construal": lambda role, charter: (
+            "stop-construal", (role, charter, "audit/construals/x.md", "test gate")),
+        "construal>verify": lambda role, charter: (
+            "stop-construal", (role, charter, "audit/construals/x.md", "test gate")),
+    }
     for label, rws, unchk, exists, cap, complete, wk, wd in _adjacency:
-        k, d = decide(rws, unchk, exists, batch_size=8, triage_cap=cap, plan_complete=complete)
+        k, d = decide(rws, unchk, exists, batch_size=8, triage_cap=cap, plan_complete=complete,
+                      refusals=_ADJ_REFUSALS.get(label), construal=_ADJ_CONSTRUAL.get(label))
         ok = k == wk and d == wd
         print(f"{'PASS' if ok else 'FAIL'}: priority {label} (F-0077 ruling #3)" + ("" if ok else f" -> {k},{d}"))
         failed += 0 if ok else 1
@@ -4110,6 +4815,9 @@ def selftest():
     _rg_cases = [
         ("stop-triage", ["F-0001"], ["triage needed", "xcheck-triage"]),
         ("stop-needs-human", "F-0001", ["needs-human on F-0001", "human decides"]),
+        ("stop-refusal", ("F-0001", "material-missing"), ["refusal on F-0001", "material-missing", "STAYS IN FORCE"]),
+        ("stop-construal", ("Remediator", "finding F-0001", "audit/construals/k.md", "it is `proposed`"),
+         ["construal on the Remediator charter", "audit/construals/k.md", "EVIDENCE, never authority"]),
         ("stop-norm-ratification", "F-0002", ["norm-ratification on F-0002", "norm owner"]),
         ("stop-inconsistent", ["F-0003"], ["non-terminal statuses with no move"]),
         ("stop-ledger-corrupt", ["bad | row"], ["unparsable as finding rows"]),
@@ -5488,6 +6196,606 @@ def selftest():
                   + ("" if ok else f" -> bad={bad} (want_bad={want_bad})"))
             failed += 0 if ok else 1
 
+    # LCC import, phase 2 — the §5 TYPED REFUSAL. A role that ACCEPTED a charter and
+    # cannot execute it records one reason from the ONE closed vocabulary plus prose; the
+    # charter stays in force and the finding's status is untouched. Three predicates, each
+    # exercised on its own poison AND on the valid case, plus the routing branch and the
+    # status-invariance the whole mechanism rests on.
+    with tempfile.TemporaryDirectory() as td:
+        proj = Path(td)
+        audit = proj / "audit"
+        (audit / "findings").mkdir(parents=True)
+        (audit / "LEDGER.md").write_text(_ledger(
+            "| F-0001 | a | major | accepted | Remediator | 2026-08-02 |\n"), encoding="utf-8")
+        fpath = audit / "findings" / "F-0001-a.md"
+
+        def _wr_refusal(refusal, section):
+            fpath.write_text(
+                "---\nid: F-0001\npass: P-01\nupdated: 2026-08-02\ntitle: a\nseverity: major\n"
+                "dimension: invariants\nunit: B01\nstatus: accepted\nattempts: 0\n"
+                + ("" if refusal is None else f"refusal: {refusal}\n")
+                + "---\n\n## Refusal\n" + section + "\n", encoding="utf-8")
+
+        def _refusal_issues():
+            return [i for i in canonical_record_issues(audit) if "refusal" in i or "Refusal" in i]
+
+        # (1) VOCABULARY. Every one of the six reasons passes the SHARED validator
+        #     (canonical_record_issues — the one gate lint, the decision path and metrics
+        #     all route through); a seventh value is rejected there, naming the field.
+        _prose = "the norm registry AUDIT.md names no norm for this dimension"
+        _voc_good = True
+        for _r in sorted(REFUSAL_REASONS):
+            _wr_refusal(_r, _prose)
+            _voc_good = _voc_good and not _refusal_issues()
+        _wr_refusal("not-a-reason", _prose)
+        _voc_bad = any("not in the §5 vocabulary" in i for i in _refusal_issues())
+        #     absent refusal (the state of all 131 shipped findings) is clean — nullable.
+        _wr_refusal(None, "<!-- empty -->")
+        _voc_absent = not _refusal_issues()
+        ok = _voc_good and _voc_bad and _voc_absent
+        print(f"{'PASS' if ok else 'FAIL'}: §5 refusal — the six-value vocabulary passes the SHARED validator, a seventh value is rejected by name, absent is clean (LCC phase 2)"
+              + ("" if ok else f" -> good={_voc_good} bad={_voc_bad} absent={_voc_absent}"))
+        failed += 0 if ok else 1
+
+        # (2) SECTION. A reason code with no `## Refusal` prose is a bare category that
+        #     carries nothing forward. Emptiness is decided by the SHARED declared-form
+        #     classifier (F-0111), so the template's own HTML-comment prompt reads as empty
+        #     and a stripped heading is not a heading — no substring test.
+        _sec = []
+        for label, section, want_bad in [
+            ("prose content", _prose, False),
+            ("list-item content", "- " + _prose, False),
+            ("html-comment placeholder only", "<!-- state what is missing -->", True),
+            ("empty section", "", True),
+            ("punctuation only", "...", True),
+            ("bare list marker", "-", True),
+            ("fenced-out prose", "```\n" + _prose + "\n```", True),
+        ]:
+            _wr_refusal("material-missing", section)
+            got_bad = any("`## Refusal` section is missing or empty" in i for i in _refusal_issues())
+            _sec.append((label, got_bad == want_bad))
+        #     the heading itself must be real: commenting it out is a missing section.
+        fpath.write_text(
+            "---\nid: F-0001\npass: P-01\nupdated: 2026-08-02\ntitle: a\nseverity: major\n"
+            "dimension: invariants\nunit: B01\nstatus: accepted\nattempts: 0\n"
+            "refusal: material-missing\n---\n\n<!-- ## Refusal -->\n" + _prose + "\n",
+            encoding="utf-8")
+        _sec.append(("commented-out heading",
+                     any("`## Refusal` section is missing or empty" in i for i in _refusal_issues())))
+        ok = all(v for _l, v in _sec)
+        print(f"{'PASS' if ok else 'FAIL'}: §5 refusal — a reason code with no `## Refusal` prose fails the shared declared-form check; comment/fence/placeholder/empty-marker bodies are all empty, real prose and a real list item are content (LCC phase 2, F-0111 discipline)"
+              + ("" if ok else f" -> {[l for l, v in _sec if not v]}"))
+        failed += 0 if ok else 1
+
+        # (3) ROUTING + STATUS INVARIANCE. A live refusal halts the cycle with the reason
+        #     code, and recording it changes NO status: the charter stays in force (§5).
+        _wr_refusal("material-missing", _prose)
+        _status_before = load_findings(audit)["F-0001"]["status"]
+        _conf = {"batch_size": "8", "triage_batch_cap": "0", "session_note": ""}
+        _rows, _u, _c, _k, _d = state_and_decision(proj, _conf)
+        _status_after = load_findings(audit)["F-0001"]["status"]
+        _ledger_after = [r["status"] for r in parse_ledger(audit)]
+        ok_route = _k == "stop-refusal" and _d == ("F-0001", "material-missing")
+        ok_status = (_status_before == "accepted" and _status_after == "accepted"
+                     and _ledger_after == ["accepted"])
+        #     a TERMINAL finding's refusal is history, not a standing obstacle: it must not
+        #     halt the cycle (the live/dead distinction state_and_decision applies).
+        (audit / "LEDGER.md").write_text(_ledger(
+            "| F-0001 | a | major | closed | — | 2026-08-02 |\n"), encoding="utf-8")
+        fpath.write_text(fpath.read_text(encoding="utf-8").replace("status: accepted", "status: closed"),
+                         encoding="utf-8")
+        _r2, _u2, _c2, _k2, _d2 = state_and_decision(proj, _conf)
+        ok_dead = _k2 != "stop-refusal"
+        ok = ok_route and ok_status and ok_dead
+        print(f"{'PASS' if ok else 'FAIL'}: §5 refusal — a LIVE refusal routes to stop-refusal carrying its reason code, recording it leaves status AND the ledger row unchanged, a refusal on a TERMINAL finding does not halt (LCC phase 2)"
+              + ("" if ok else f" -> route={_k},{_d} status={_status_before}->{_status_after} ledger={_ledger_after} dead={_k2}"))
+        failed += 0 if ok else 1
+
+    # (4) META-CHECKS, mutated tables (§7 adversarial): each new guard must BITE.
+    #     (a) dropping `_canon_refusal` from the schema must be REFUSED by the value-
+    #         coverage meta-check — a value-constrained §2 field read past validation is
+    #         the CF-0001 class root, so the predicate cannot be quietly removed.
+    #     (b) the §2 enumeration and REFUSAL_REASONS must agree; a seventh member on
+    #         either side is named.
+    _s2v = {"refusal": "null | " + " | ".join(sorted(REFUSAL_REASONS))}
+    _no_pred = dict(CANONICAL_SCHEMA); _no_pred["refusal"] = (True, True, None)
+    ok_ma = any("'refusal'" in i and "NO value predicate" in i
+                for i in _schema_value_coverage_issues(_s2v, schema=_no_pred, delegated={}))
+    ok_mb = not _schema_enum_binding_issues(_s2v)
+    ok_mc = any("'refusal'" in i and "code lacks ['seventh']" in i
+                for i in _schema_enum_binding_issues({"refusal": "null | " + " | ".join(sorted(REFUSAL_REASONS | {"seventh"}))}))
+    ok_md = any("'refusal'" in i and "§2 lacks ['cost-exceeded']" in i
+                for i in _schema_enum_binding_issues({"refusal": "null | " + " | ".join(sorted(REFUSAL_REASONS - {"cost-exceeded"}))}))
+    #     (c) the SHIPPED XCHECK.md §2 enumeration binds to the live constant — the norm
+    #         and the code carry one vocabulary, not two.
+    _shipped_x = Path(__file__).resolve().parent.parent / "XCHECK.md"
+    ok_me = (not _schema_enum_binding_issues(
+        section2_canonical_field_values(_shipped_x.read_text(encoding="utf-8", errors="replace")) or {})
+        if _shipped_x.is_file() else True)
+    ok = ok_ma and ok_mb and ok_mc and ok_md and ok_me
+    print(f"{'PASS' if ok else 'FAIL'}: §5 refusal — the vocabulary is declared ONCE: dropping its predicate is refused by the value-coverage meta-check, and the shipped XCHECK.md §2 enumeration is BOUND to REFUSAL_REASONS (a seventh member on either side is named) (LCC phase 2, CF-0001 discipline)"
+          + ("" if ok else f" -> a={ok_ma} b={ok_mb} c={ok_mc} d={ok_md} shipped={ok_me}"))
+    failed += 0 if ok else 1
+
+    # LCC import, phase 3 — SCOPE TYPING (§7 admitted scope, §10 `scope_typing`). The
+    # flag is the whole point: off is the shipped default and must be behaviour-identical,
+    # on turns a `fixed` finding's undeclared scope into a named lint failure. Both halves
+    # of the declaration are required; the residue half is the load-bearing one.
+    with tempfile.TemporaryDirectory() as td:
+        proj = Path(td)
+        audit = proj / "audit"
+        (audit / "findings").mkdir(parents=True)
+        (audit / "XCHECK.md").write_text(
+            (Path(__file__).resolve().parent.parent / "XCHECK.md").read_text(encoding="utf-8"),
+            encoding="utf-8") if (Path(__file__).resolve().parent.parent / "XCHECK.md").is_file() else None
+        (audit / "LEDGER.md").write_text(_ledger(
+            "| F-0001 | a | major | fixed | Verifier | 2026-08-02 |\n"), encoding="utf-8")
+        fpath = audit / "findings" / "F-0001-a.md"
+
+        def _wr_scope(scope, body):
+            fpath.write_text(
+                "---\nid: F-0001\npass: P-01\nupdated: 2026-08-02\ntitle: a\nseverity: major\n"
+                "dimension: invariants\nunit: B01\nstatus: fixed\nattempts: 0\n"
+                "fixed-by: 0123456789abcdef\n"  # F-0096 provenance, unrelated to this check
+                + ("" if scope is None else f"admitted-scope: {scope}\n")
+                + "---\n\n" + body + "\n", encoding="utf-8")
+
+        def _set_flag(val):
+            (audit / "orchestrator.conf").write_text(f"scope_typing={val}\n", encoding="utf-8")
+
+        def _scope_issues():
+            return [i for i in admitted_scope_issues(audit)]
+
+        _full = ("## Admitted scope\n\n### Covers\nthe two call sites in decide()\n\n"
+                 "### Does not cover\nthe metrics path, which reads the same field\n")
+        _covers_only = "## Admitted scope\n\n### Covers\nthe two call sites in decide()\n"
+        _empty_residue = _full.replace("the metrics path, which reads the same field",
+                                       "<!-- TODO -->")
+
+        # (1) FLAG OFF: a `fixed` finding with NO admitted-scope is lint-clean — the
+        #     shipped default is demonstrably unchanged. FLAG ON: the same file fails.
+        _wr_scope(None, "## Remediation\nchanged decide()\n")
+        _set_flag("off")
+        _b = _io2.StringIO()
+        with _cl2.redirect_stdout(_b):
+            _rc_off = cmd_lint(proj)
+        _set_flag("on")
+        _b2 = _io2.StringIO()
+        with _cl2.redirect_stdout(_b2):
+            _rc_on = cmd_lint(proj)
+        ok = (_rc_off == 0 and _rc_on == 1
+              and "`admitted-scope` is empty" in _b2.getvalue()
+              and "`admitted-scope` is empty" not in _b.getvalue())
+        print(f"{'PASS' if ok else 'FAIL'}: §7 scope typing — the SAME `fixed` finding is lint-CLEAN with `scope_typing=off` and fails with a named message when on (LCC phase 3)"
+              + ("" if ok else f" -> off_rc={_rc_off} on_rc={_rc_on}"))
+        failed += 0 if ok else 1
+
+        # (2) the section, structurally. Coverage with no residue FAILS naming the residue;
+        #     an HTML-comment residue is empty; a ```-fenced or commented-out section is not
+        #     a section. Full declaration passes. No substring test anywhere (F-0130).
+        _cases = []
+        for label, scope, body, want in [
+            ("full declaration", "decide-call-sites", _full, []),
+            ("scalar scope value", "decide", _full, []),
+            ("flat list scope value", "[decide, metrics]", _full, []),
+            ("no `## Admitted scope` section", "decide", "## Remediation\nchanged\n",
+             ["no `## Admitted scope` section"]),
+            ("covers without residue", "decide", _covers_only,
+             ["missing or empty under `### Does not cover`", "residue half is mandatory"]),
+            ("residue is an HTML-comment placeholder", "decide", _empty_residue,
+             ["missing or empty under `### Does not cover`"]),
+            ("whole section fenced out", "decide", "```\n" + _full + "```\n",
+             ["no `## Admitted scope` section"]),
+            ("section commented out", "decide", "<!--\n" + _full + "-->\n",
+             ["no `## Admitted scope` section"]),
+            ("empty scope value with a full section", "", _full,
+             ["`admitted-scope` is empty"]),
+            ("empty list scope value", "[]", _full,
+             ["admitted-scope is present but names nothing"]),
+        ]:
+            _wr_scope(scope, body)
+            got = "\n".join(_scope_issues() + [i for i in canonical_record_issues(audit)
+                                               if "admitted-scope" in i])
+            _cases.append((label, all(w in got for w in want) and (want or got == "")))
+        ok = all(v for _l, v in _cases)
+        print(f"{'PASS' if ok else 'FAIL'}: §7 scope typing — the `## Admitted scope` section is checked STRUCTURALLY (real ATX heading, shared declared-form body): coverage without residue is named as the missing residue, a placeholder/fenced/commented section is empty, a scalar and a flat list both pass, an empty list is refused (LCC phase 3, F-0130 discipline)"
+              + ("" if ok else f" -> {[l for l, v in _cases if not v]}"))
+        failed += 0 if ok else 1
+
+        # (3) a `closed` finding is NOT checked even with the flag on — the 131 terminal
+        #     records were closed under the old norm; invalidating them is history
+        #     laundering (§7 note).
+        (audit / "LEDGER.md").write_text(_ledger(
+            "| F-0001 | a | major | closed | — | 2026-08-02 |\n"), encoding="utf-8")
+        fpath.write_text(
+            "---\nid: F-0001\npass: P-01\nupdated: 2026-08-02\ntitle: a\nseverity: major\n"
+            "dimension: invariants\nunit: B01\nstatus: closed\nattempts: 0\n---\n\n## Remediation\nx\n",
+            encoding="utf-8")
+        ok = not admitted_scope_issues(audit)
+        print(f"{'PASS' if ok else 'FAIL'}: §7 scope typing — a `closed` finding is exempt even with the flag on (no retroactive invalidation of terminal records) (LCC phase 3)"
+              + ("" if ok else f" -> {admitted_scope_issues(audit)}"))
+        failed += 0 if ok else 1
+
+    # (4) the FLAG itself goes through the typed Conf boundary (F-0113): a consumer gets a
+    #     real bool for every declared spelling, and a non-boolean is an ADDRESSED operator
+    #     error, not a silent `off` and not a traceback.
+    _bool_ok = []
+    for _spelling, _want in [("on", True), ("ON", True), ("true", True), ("yes", True), ("1", True),
+                             ("off", False), ("false", False), ("no", False), ("0", False),
+                             ("", False)]:
+        _v = Conf({"scope_typing": _spelling}).get("scope_typing", "off")
+        _bool_ok.append((_spelling, _v is _want))
+    _addressed = False
+    try:
+        Conf({"scope_typing": "maybe"}).get("scope_typing", "off")
+    except SystemExit as _e:
+        _addressed = "scope_typing must be one of" in str(_e)
+    except Exception:
+        _addressed = False
+    #     and the key is DECLARED public config with an `off` default (README §8 surface).
+    _declared = CONF_DEFAULTS.get("scope_typing") == "off" and "scope_typing" in BOOLEAN_CONF
+    ok = all(v for _s, v in _bool_ok) and _addressed and _declared
+    print(f"{'PASS' if ok else 'FAIL'}: §10 `scope_typing` reads through the TYPED Conf boundary — every declared spelling yields a real bool, a non-boolean is an addressed error not a traceback and not a silent off, default is `off` (LCC phase 3, F-0113 discipline)"
+          + ("" if ok else f" -> spellings={[s for s, v in _bool_ok if not v]} addressed={_addressed} declared={_declared}"))
+    failed += 0 if ok else 1
+
+    # LCC import, phase 4 — the CONSTRUAL RECORD (§4 rule 9). The artifact must be valid
+    # before anything routes on it, so this phase validates the record and nothing routes:
+    # every predicate is exercised on its own poison and on the valid case, and the
+    # producer≠admitter check (LCC F2) is exercised in both of its failing shapes.
+    _CONSTRUAL_BODY = ("\n## Task frame\nfind promise-width defects in decide()\n"
+                       "\n## Approach\nread decide() and its callers, then poison each claim\n"
+                       "\n## Assumptions\nthe ledger is already lint-clean\n"
+                       "\n## Stop conditions\ncharter exhausted or 15 findings\n"
+                       "\n## Out of scope\nthe metrics command\n")
+
+    def _construal_text(over=None, body=None):
+        fm = {
+            "key": construal_key("Auditor", "dimension X, units 4-6"),
+            "role": "Auditor",
+            "charter": "dimension X, units 4-6",
+            "session": "a1b2c3d4e5f60718",
+            "created": "2026-08-02",
+            "status": "proposed",
+            "admitted-by": "null",
+            "admitted-at": "null",
+            "envelope": "null",
+        }
+        fm.update(over or {})
+        fm = {k: v for k, v in fm.items() if v is not None}
+        return ("---\n" + "".join(f"{k}: {v}\n" for k, v in fm.items()) + "---\n"
+                + (_CONSTRUAL_BODY if body is None else body))
+
+    with tempfile.TemporaryDirectory() as td:
+        audit = Path(td) / "audit"
+        (audit / "construals").mkdir(parents=True)
+        (audit / "findings").mkdir(parents=True)
+        _ckey = construal_key("Auditor", "dimension X, units 4-6")
+
+        def _write_construal(over=None, body=None, name=None):
+            for old in (audit / "construals").glob("*.md"):
+                old.unlink()
+            (audit / "construals" / (name or f"{_ckey}.md")).write_text(
+                _construal_text(over, body), encoding="utf-8")
+
+        _cases = []
+        for label, over, body, name, want in [
+            ("valid proposed construal", None, None, None, []),
+            ("valid admitted by another session",
+             {"status": "admitted", "admitted-by": "ffffffffffffffff", "admitted-at": "2026-08-02"},
+             None, None, []),
+            ("missing `## Assumptions` section", None,
+             _CONSTRUAL_BODY.replace("\n## Assumptions\nthe ledger is already lint-clean\n", "\n"),
+             None, ["section `## Assumptions` is missing or empty"]),
+            ("section present but only an HTML-comment placeholder", None,
+             _CONSTRUAL_BODY.replace("the ledger is already lint-clean", "<!-- TODO -->"),
+             None, ["section `## Assumptions` is missing or empty"]),
+            ("status outside the three-value vocabulary", {"status": "approved"}, None, None,
+             ["status 'approved' is not in the construal vocabulary"]),
+            ("SELF-ADMISSION: admitted-by == session",
+             {"status": "admitted", "admitted-by": "a1b2c3d4e5f60718", "admitted-at": "2026-08-02"},
+             None, None, ["SELF-ADMISSION is refused"]),
+            ("admitted with NO admitter — fails closed",
+             {"status": "admitted", "admitted-by": None, "admitted-at": "2026-08-02"},
+             None, None, ["`admitted-by` is empty", "fail-closed"]),
+            ("malformed key", {"key": "not-a-key"}, None, "not-a-key.md",
+             ["key 'not-a-key' is not a canonical construal key"]),
+            ("filename does not match the record's key", None, None, "deadbeefdeadbeef.md",
+             ["filename does not match the record's own key"]),
+            ("non-canonical role", {"role": "Archivist"}, None, None,
+             ["role 'Archivist' is not a canonical role"]),
+            ("malformed session id", {"session": "not-a-session"}, None, None,
+             ["session 'not-a-session' is not a canonical session id"]),
+            ("impossible calendar date", {"created": "2026-02-30"}, None, None,
+             ["created '2026-02-30' is not an existing calendar date"]),
+            ("admitter is neither a session nor an envelope",
+             {"status": "admitted", "admitted-by": "somebody", "admitted-at": "2026-08-02"},
+             None, None, ["neither a canonical session id nor an `envelope:<name>` token"]),
+            ("envelope admitter is accepted and never collides with a session",
+             {"status": "admitted", "admitted-by": "envelope:nightly-audit", "admitted-at": "2026-08-02",
+              "envelope": "nightly-audit"}, None, None, []),
+            ("no frontmatter at all", None, None, None, []),  # replaced below
+        ][:-1]:
+            _write_construal(over, body, name)
+            got = "\n".join(construal_issues(audit))
+            _cases.append((label, all(w in got for w in want) and (bool(want) or got == "")))
+        #     a file with no frontmatter block is REPORTED, not silently skipped.
+        _write_construal(); (audit / "construals" / f"{_ckey}.md").write_text("no frontmatter here\n", encoding="utf-8")
+        _cases.append(("no frontmatter block",
+                       any("no frontmatter block" in i for i in construal_issues(audit))))
+        #     an ABSENT and an EMPTY construals/ directory are both clean — off by default.
+        for old in (audit / "construals").glob("*.md"):
+            old.unlink()
+        _cases.append(("empty construals/ is clean", construal_issues(audit) == []))
+        (audit / "construals").rmdir()
+        _cases.append(("absent construals/ is clean", construal_issues(audit) == []))
+        #     and the whole thing must be SURFACED by `lint`, not merely computable by a
+        #     helper: removing the lint hook is a real hole, and this is the case that
+        #     catches it (the predicate existing is not the same as the tool running it).
+        (audit / "construals").mkdir(exist_ok=True)
+        (audit / "LEDGER.md").write_text(_ledger(""), encoding="utf-8")
+        _write_construal({"status": "admitted", "admitted-by": "a1b2c3d4e5f60718",
+                          "admitted-at": "2026-08-02"})
+        _b = _io2.StringIO()
+        with _cl2.redirect_stdout(_b):
+            _rc_lint = cmd_lint(audit.parent)
+        _cases.append(("lint SURFACES a construal violation",
+                       _rc_lint == 1 and "SELF-ADMISSION is refused" in _b.getvalue()))
+        for old in (audit / "construals").glob("*.md"):
+            old.unlink()
+        _b = _io2.StringIO()
+        with _cl2.redirect_stdout(_b):
+            _rc_lint_clean = cmd_lint(audit.parent)
+        _cases.append(("lint is clean with an empty construals/", _rc_lint_clean == 0))
+        ok = all(v for _l, v in _cases)
+        print(f"{'PASS' if ok else 'FAIL'}: §4 rule 9 construal record — every field validated through the SHARED `_field_gate` over CONSTRUAL_SCHEMA, all five body sections required and non-empty, filename bound to the record's own key, and PRODUCER != ADMITTER enforced in BOTH failing shapes (self-admission refused, absent admitter fails CLOSED); an absent/empty construals/ is not an error (LCC phase 4, F2)"
+              + ("" if ok else f" -> {[l for l, v in _cases if not v]}"))
+        failed += 0 if ok else 1
+
+    # key DETERMINISM, both directions: same role+charter -> same key; any change -> a
+    # different key. The second direction is the load-bearing one — a reworded charter is a
+    # different charter, so a construal admitted for one reading cannot license another.
+    _k1 = construal_key("Auditor", "dimension X, units 4-6")
+    _k2 = construal_key("Auditor", "dimension X, units 4-6")
+    _k3 = construal_key("Auditor", "dimension X, units 4-7")
+    _k4 = construal_key("Remediator", "dimension X, units 4-6")
+    #     the boundary pair: WITHOUT the NUL separator these two concatenate to the same
+    #     bytes ("Auditor" + "x" == "Auditorx" + ""), so this is the case that proves the
+    #     separator is load-bearing rather than decorative.
+    _k5 = construal_key("Auditor", "x")
+    _k6 = construal_key("Auditorx", "")
+    ok = (_k1 == _k2 and _k1 != _k3 and _k1 != _k4 and _k5 != _k6
+          and is_session_id(_k1) and _k1 == construal_key("  Auditor  ", "  dimension X, units 4-6  "))
+    print(f"{'PASS' if ok else 'FAIL'}: §4 rule 9 — the charter key is DETERMINISTIC (same role+charter -> same key, surrounding whitespace ignored) and DISCRIMINATING (a changed charter, a changed role, and a role/charter boundary shift all give different keys); its form is the one 16-hex id shape (LCC phase 4)"
+          + ("" if ok else f" -> {_k1},{_k2},{_k3},{_k4},{_k5},{_k6}"))
+    failed += 0 if ok else 1
+
+    # ONE validator, ONE section parser (CF-0001 / F-0130 discipline): the construal record
+    # is validated by the SAME `_field_gate` dispatcher the canonical record uses, and its
+    # sections by the SAME `section_declared_content` the coverage and refusal checks use.
+    # Proven by MUTATING the shared helpers and requiring the construal check to move with
+    # them — a private copy would keep passing.
+    with tempfile.TemporaryDirectory() as td:
+        audit = Path(td) / "audit"
+        (audit / "construals").mkdir(parents=True)
+        #     the fixture carries a VALUE poison (a non-canonical session id) so the
+        #     unmutated run REPORTS it — otherwise "no issues under a neutered gate" would
+        #     be vacuously true and prove nothing.
+        _ck = construal_key("Auditor", "c")
+        (audit / "construals" / f"{_ck}.md").write_text(
+            _construal_text({"key": _ck, "charter": "c", "session": "not-a-session"}), encoding="utf-8")
+        _real_gate, _real_sec = _field_gate, section_declared_content
+        _live = construal_issues(audit)
+        try:
+            globals()["_field_gate"] = lambda field, nullable, validate: (lambda val: None)
+            _no_gate = construal_issues(audit)
+            globals()["_field_gate"] = _real_gate
+            globals()["section_declared_content"] = lambda text, heading: False
+            _no_sec = construal_issues(audit)
+        finally:
+            globals()["_field_gate"] = _real_gate
+            globals()["section_declared_content"] = _real_sec
+        _restored = construal_issues(audit)
+        #     unmutated: the value poison is reported. With the shared gate neutered it
+        #     VANISHES — so the value check has no private copy. With the shared section
+        #     parser neutered ALL FIVE sections report missing. Restored: back to the poison.
+        ok = (any("not a canonical session id" in i for i in _live)
+              and _no_gate == []
+              and len([i for i in _no_sec if "is missing or empty" in i]) == 5
+              and _restored == _live)
+        print(f"{'PASS' if ok else 'FAIL'}: §4 rule 9 — construal validation routes through the SHARED value gate and the SHARED section parser, not a private copy: neutering `_field_gate` removes its value checks and neutering `section_declared_content` reports all five sections, so a second parsing/validation path cannot be hiding here (LCC phase 4, CF-0001/F-0130 discipline)"
+              + ("" if ok else f" -> no_gate={_no_gate} no_sec={len(_no_sec)} restored={_restored}"))
+        failed += 0 if ok else 1
+
+    # LCC import, phase 5 — the CONSTRUAL GATE (§4 rule 9, §10 `construal_gate`). The gate
+    # routes; the record (phase 4) is already valid. Everything here is measured against the
+    # gate-OFF baseline, because a candidate mechanism that changes default behaviour is not
+    # a candidate, it is a regression.
+    with tempfile.TemporaryDirectory() as td:
+        proj = Path(td)
+        audit = proj / "audit"
+        (audit / "findings").mkdir(parents=True)
+        (audit / "construals").mkdir(parents=True)
+        (audit / "XCHECK.md").write_text("## 2. Artifacts\n", encoding="utf-8")
+        (audit / "LEDGER.md").write_text(_ledger(
+            "| F-0001 | a | major | accepted | Remediator | 2026-08-02 |\n"), encoding="utf-8")
+        (audit / "findings" / "F-0001-a.md").write_text(
+            "---\nid: F-0001\npass: P-01\nupdated: 2026-08-02\ntitle: a\nseverity: major\n"
+            "dimension: invariants\nunit: B01\nstatus: accepted\nattempts: 0\n---\n", encoding="utf-8")
+
+        def _audit_md(envelope_line=""):
+            (audit / "AUDIT.md").write_text(
+                "# AUDIT\n\n## 2. Dimensions\n\n| key | what it catches | norm source |\n"
+                "|---|---|---|\n| invariants | broken invariants | N1 |\n\n"
+                "## 3. Unit map\n\n| unit id | material | responsibility |\n|---|---|---|\n"
+                "| B01 | bin/xcheck | orchestrator |\n\n## 4. Pass queue\n- [ ] P-01 invariants\n\n"
+                "## 5. Limits\n" + envelope_line + "\n", encoding="utf-8")
+        _audit_md()
+        _conf_off = Conf({"batch_size": "8", "triage_batch_cap": "0", "construal_gate": "off"})
+        _conf_on = Conf({"batch_size": "8", "triage_batch_cap": "0", "construal_gate": "on"})
+
+        # (1) GATE OFF is byte-identical to the pre-gate baseline. The baseline IS
+        #     `_decide_core` — decide()'s own core, with no construal argument — so this
+        #     compares the shipped path against the decision the tool made before the gate
+        #     existed, not against a re-implementation of it.
+        _rows_b, _u_b, _c_b, _k_off, _d_off = state_and_decision(proj, _conf_off)
+        _k_base, _d_base = _decide_core(_rows_b, _u_b, (audit / "AUDIT.md").is_file(), 8, 0,
+                                        plan_complete=audit_plan_complete(audit))
+        ok = (_k_off, _d_off) == (_k_base, _d_base)
+        print(f"{'PASS' if ok else 'FAIL'}: §4 rule 9 gate — with `construal_gate=off` the decision is BYTE-IDENTICAL to the pre-gate core decision (LCC phase 5)"
+              + ("" if ok else f" -> off={_k_off},{_d_off} baseline={_k_base},{_d_base}"))
+        failed += 0 if ok else 1
+        _off_render = f"{_k_off} -> {_d_off}"
+
+        # (2) FOUR ROUTING STATES.
+        _route = []
+        #     (a) gate on, no construal file -> run-construal naming the charter.
+        _r, _u, _c, _k_a, _d_a = state_and_decision(proj, _conf_on)
+        _key = construal_key("Remediator", "finding F-0001")
+        _route.append(("no construal -> run-construal",
+                       _k_a == "run-construal" and _d_a[0] == "Remediator"
+                       and _d_a[1] == "finding F-0001" and _d_a[2] == _key))
+        #     the dispatched charter tells the role to write the file and stop, and never
+        #     to admit its own construal.
+        _role_c, _charter_c = role_and_charter(_k_a, _d_a)
+        _route.append(("run-construal charter is write-and-stop, no self-admission",
+                       _role_c == "Remediator" and "STOP" in _charter_c
+                       and "must NOT admit your own construal" in _charter_c
+                       and _key in _charter_c))
+
+        def _put_construal(status="proposed", adm="null", at="null", env="null"):
+            (audit / "construals" / f"{_key}.md").write_text(
+                f"---\nkey: {_key}\nrole: Remediator\ncharter: finding F-0001\n"
+                f"session: a1b2c3d4e5f60718\ncreated: 2026-08-02\nstatus: {status}\n"
+                f"admitted-by: {adm}\nadmitted-at: {at}\nenvelope: {env}\n---\n"
+                "\n## Task frame\nfix F-0001\n\n## Approach\nread, patch, self-check\n"
+                "\n## Assumptions\nthe quote still matches\n\n## Stop conditions\nfinding fixed\n"
+                "\n## Out of scope\nother findings\n", encoding="utf-8")
+
+        #     (b) proposed, no envelope declared -> stop-construal.
+        _put_construal()
+        _r, _u, _c, _k_b, _d_b = state_and_decision(proj, _conf_on)
+        _route.append(("proposed without envelope -> stop-construal",
+                       _k_b == "stop-construal" and "no live envelope" in _d_b[3]))
+        #     (c) proposed + a LIVE covering envelope -> admitted by the envelope, then the
+        #         real charter is dispatched. The producer!=admitter predicate must STILL
+        #         hold: `envelope:<name>` can never equal a 16-hex session id.
+        _audit_md("construal_envelope: nightly roles=Remediator,Verifier recheck-by=2099-01-01\n")
+        _r, _u, _c, _k_c, _d_c = state_and_decision(proj, _conf_on)
+        _admitted_fm = next((f for f in load_construal_files(audit) if f["_file"] == f"{_key}.md"), {})
+        _route.append(("live envelope admits and dispatches the real charter",
+                       _k_c == "run-remediator" and _d_c == ["F-0001"]
+                       and _admitted_fm.get("status") == "admitted"
+                       and _admitted_fm.get("admitted-by") == "envelope:nightly"
+                       and construal_issues(audit) == []))
+        #     (d) an already-admitted construal dispatches without touching anything.
+        _put_construal("admitted", "ffffffffffffffff", "2026-08-02")
+        _audit_md()
+        _r, _u, _c, _k_d, _d_d = state_and_decision(proj, _conf_on)
+        _route.append(("admitted -> dispatch", _k_d == "run-remediator" and _d_d == ["F-0001"]))
+        ok = all(v for _l, v in _route)
+        print(f"{'PASS' if ok else 'FAIL'}: §4 rule 9 gate — four routing states: no construal -> run-construal (write-and-stop charter, self-admission forbidden); `proposed` with no envelope -> stop-construal; `proposed` under a LIVE envelope -> admitted as `envelope:<name>` (producer != admitter still holds) and the real charter dispatched; `admitted` -> dispatch (LCC phase 5)"
+              + ("" if ok else f" -> {[l for l, v in _route if not v]}"))
+        failed += 0 if ok else 1
+
+        # (3) ENVELOPE FAIL-CLOSED, every degenerate case. Each must behave EXACTLY as
+        #     "no envelope" — the LCC C.2 requirement that a pre-authorization which cannot
+        #     state its own live expiry is not a pre-authorization.
+        _put_construal()
+        _env = []
+        for label, line in [
+            ("expired recheck-by", "construal_envelope: nightly roles=Remediator recheck-by=2020-01-01\n"),
+            ("impossible calendar date", "construal_envelope: nightly roles=Remediator recheck-by=2026-02-30\n"),
+            ("malformed date", "construal_envelope: nightly roles=Remediator recheck-by=soon\n"),
+            ("recheck-by absent entirely", "construal_envelope: nightly roles=Remediator\n"),
+            ("roles absent", "construal_envelope: nightly recheck-by=2099-01-01\n"),
+            ("role not covered", "construal_envelope: nightly roles=Auditor recheck-by=2099-01-01\n"),
+            ("non-role in the roles list", "construal_envelope: nightly roles=Archivist recheck-by=2099-01-01\n"),
+            ("two declarations", "construal_envelope: a roles=Remediator recheck-by=2099-01-01\n"
+                                 "construal_envelope: b roles=Remediator recheck-by=2099-01-01\n"),
+            # a MALFORMED declaration standing next to a live one must poison the whole
+            # thing. Dropping only the unparseable line would let the good one carry the
+            # day, which reads the operator's evident confusion as authorization — the
+            # only case where the "a declaration that does not parse is not an envelope"
+            # branch is load-bearing, and therefore the case that proves it.
+            ("a malformed declaration beside a valid one",
+             "construal_envelope: good roles=Remediator recheck-by=2099-01-01\n"
+             "construal_envelope: broken roles=Remediator\n"),
+            ("a malformed declaration BEFORE a valid one",
+             "construal_envelope: broken\n"
+             "construal_envelope: good roles=Remediator recheck-by=2099-01-01\n"),
+            ("no declaration at all", ""),
+        ]:
+            _audit_md(line)
+            _put_construal()
+            _r, _u, _c, _k_e, _d_e = state_and_decision(proj, _conf_on)
+            _env.append((label, _k_e == "stop-construal"))
+        #     and the expiry BOUNDARY, checked on both sides of the last covered day.
+        _live = {"name": "n", "roles": {"Remediator"}, "recheck-by": "2026-08-02"}
+        _env.append(("recheck-by day itself still covers", envelope_covers(_live, "Remediator", "2026-08-02")))
+        _env.append(("the day after does not", not envelope_covers(_live, "Remediator", "2026-08-03")))
+        _env.append(("no envelope never covers", not envelope_covers(None, "Remediator", "2026-08-02")))
+        ok = all(v for _l, v in _env)
+        print(f"{'PASS' if ok else 'FAIL'}: §4 rule 9 envelope is FAIL-CLOSED — expired, impossible, malformed, absent `recheck-by`, absent/uncovered/non-canonical roles, and two competing declarations ALL behave exactly as 'no envelope'; the `recheck-by` day itself still covers and the day after does not (LCC phase 5, LCC C.2)"
+              + ("" if ok else f" -> {[l for l, v in _env if not v]}"))
+        failed += 0 if ok else 1
+
+        # (4) F-0118 INTERACTION: writing a construal must count as PROGRESS, or the
+        #     no-progress detector would stop the loop on the very step the gate demands.
+        #     Asserted directly against audit_state_digest, not assumed from the fact that
+        #     construals/ lives under audit/.
+        for old in (audit / "construals").glob("*.md"):
+            old.unlink()
+        _dig_before = audit_state_digest(proj)
+        _put_construal()
+        _dig_after = audit_state_digest(proj)
+        _put_construal("admitted", "ffffffffffffffff", "2026-08-02")
+        _dig_admit = audit_state_digest(proj)
+        ok = _dig_before != _dig_after and _dig_after != _dig_admit
+        print(f"{'PASS' if ok else 'FAIL'}: §4 rule 9 — writing a construal AND admitting it each change `audit_state_digest`, so the F-0118 no-progress detector counts them as progress rather than stopping the loop on the step the gate requires (LCC phase 5)"
+              + ("" if ok else f" -> {_dig_before[:8]}/{_dig_after[:8]}/{_dig_admit[:8]}"))
+        failed += 0 if ok else 1
+
+        # (5) an INVALID construal record is not an admission. Fail-closed: routing work off
+        #     a record the tool itself calls corrupt is how a misread charter becomes
+        #     authorized work.
+        (audit / "construals" / f"{_key}.md").write_text(
+            f"---\nkey: {_key}\nrole: Remediator\ncharter: finding F-0001\n"
+            f"session: a1b2c3d4e5f60718\ncreated: 2026-08-02\nstatus: admitted\n"
+            f"admitted-by: a1b2c3d4e5f60718\nadmitted-at: 2026-08-02\nenvelope: null\n---\n"
+            "\n## Task frame\nx\n\n## Approach\nx\n\n## Assumptions\nx\n"
+            "\n## Stop conditions\nx\n\n## Out of scope\nx\n", encoding="utf-8")
+        _r, _u, _c, _k_i, _d_i = state_and_decision(proj, _conf_on)
+        ok = _k_i == "stop-construal" and "invalid" in _d_i[3]
+        print(f"{'PASS' if ok else 'FAIL'}: §4 rule 9 gate — a self-admitted (invalid) construal record does NOT license dispatch; the gate fails closed on any record lint calls corrupt (LCC phase 5)"
+              + ("" if ok else f" -> {_k_i},{_d_i}"))
+        failed += 0 if ok else 1
+
+    # (6) every gate MESSAGE is distinct — a new stop that reads like an old one teaches the
+    #     operator nothing. Compared across ALL gate kinds, not just the neighbours.
+    _all_gates = [
+        ("stop-construal", ("Remediator", "finding F-0001", "audit/construals/k.md", "it is `proposed` and no live envelope covers it")),
+        ("stop-refusal", ("F-0001", "material-missing")),
+        ("stop-needs-human", "F-0001"),
+        ("stop-norm-ratification", "F-0001"),
+        ("stop-disputed", "F-0001"),
+        ("stop-triage", ["F-0001"]),
+        ("stop-inconsistent", ["F-0001"]),
+        ("stop-broken-class", "F-0001"),
+        ("done", ""),
+    ]
+    _texts = {}
+    for _gk, _gd in _all_gates:
+        _gb = _io2.StringIO()
+        with _cl2.redirect_stdout(_gb):
+            report_gate(_gk, _gd)
+        _texts[_gk] = _gb.getvalue().strip()
+    ok = (len(set(_texts.values())) == len(_texts) and all(_texts.values())
+          and "construal" in _texts["stop-construal"] and "EVIDENCE, never authority" in _texts["stop-construal"])
+    print(f"{'PASS' if ok else 'FAIL'}: §4 rule 9 — the `stop-construal` message is non-empty, names the mechanism, and is DISTINCT from every other gate message ({len(_texts)} compared) (LCC phase 5)"
+          + ("" if ok else f" -> {len(set(_texts.values()))} distinct of {len(_texts)}"))
+    failed += 0 if ok else 1
+
     # F-0012: a rejected CF with an 'accepted' member is legal (§8 rule 4)
     with tempfile.TemporaryDirectory() as td:
         audit = Path(td) / "audit"
@@ -6046,11 +7354,12 @@ def selftest():
     if shipped.is_file():
         nmap = section2_field_nullable_map(shipped.read_text(encoding="utf-8", errors="replace")) or {}
         # (a) the §2-derived nullable set is EXACTLY the fields whose §2 VALUE offers `null`
-        #     (class/recurrence-of/blocked/norm-ruling) — a tripwire if §2 changes what may be
+        #     (class/recurrence-of/blocked/norm-ruling/refusal/admitted-scope) — a tripwire if §2 changes what may be
         #     absent. `unit` is NOT here (ruling #5: its shown value `<unit path>` is
         #     substantive, so it is required and non-nullable despite the "YAML list" comment).
         derived_nullable = {f for f, n in nmap.items() if n}
-        ok_na = derived_nullable == {"class", "recurrence-of", "blocked", "norm-ruling"}
+        ok_na = derived_nullable == {"class", "recurrence-of", "blocked", "norm-ruling",
+                                     "refusal", "admitted-scope"}
         # (b) control: the live schema agrees with §2 — no required-and-nullable contradiction.
         ok_nb = not canonical_schema_nullability_issues(nmap)
         # (c) point 4: flipping a §2-required field (title) to nullable must fail HERE.
@@ -6539,7 +7848,8 @@ def selftest():
         try:
             lk = Lock(proj / "audit", "Remediator")
             lk.acquire()
-            run_session(proj, conf, "Remediator", "finding F-0001", dry_run=False, lock=lk)
+            run_session(proj, conf, "Remediator", "finding F-0001", dry_run=False, lock=lk,
+                        construal="0123456789abcdef")
             tok = lk.token
             lk.release()
         finally:
@@ -6553,8 +7863,11 @@ def selftest():
         prompt_has_inh = bool(inh) and f"XCHECK_LOCK_INHERITED={inh}" in child_prompt
         prompt_has_sid = bool(sid) and f"XCHECK_SESSION_ID={sid}" in child_prompt
         env_ok = bool(inh) and inh == tok and is_session_id(sid) and sid != inh
-        ok = env_ok and prompt_has_inh and prompt_has_sid
-        print(f"{'PASS' if ok else 'FAIL'}: run_session passes inherited-lock nonce + fresh session id to the child via env AND prompt (F-0093/F-0096)"
+        # §4 rule 9: the construal key rides the SAME two channels, for the same reason.
+        ckey = _cap.get("XCHECK_CONSTRUAL_KEY")
+        ck_ok = ckey == "0123456789abcdef" and "XCHECK_CONSTRUAL_KEY=0123456789abcdef" in child_prompt
+        ok = env_ok and prompt_has_inh and prompt_has_sid and ck_ok
+        print(f"{'PASS' if ok else 'FAIL'}: run_session passes inherited-lock nonce + fresh session id + construal key to the child via env AND prompt (F-0093/F-0096/§4 rule 9)"
               + ("" if ok else f" -> inh={inh} tok={tok} sid={sid} prompt_inh={prompt_has_inh} prompt_sid={prompt_has_sid}"))
         failed += 0 if ok else 1
 
@@ -7280,7 +8593,7 @@ def selftest():
           + ("" if ok else f" -> a={o126a!r} b={o126b!r}"))
     failed += 0 if ok else 1
 
-    # F-0130: the six shipped `templates/` files carry the required frontmatter and
+    # F-0130: the seven shipped `templates/` files carry the required frontmatter and
     # sections the lifecycle depends on. selftest used synthetic fixtures and never
     # read the files install.sh actually copies, so a template with a dropped
     # mandatory section stamped formally-incomplete artifacts into every new audit
@@ -7322,10 +8635,14 @@ def selftest():
                           "## 4. Pass queue", "## 5. Limits",
                           ("table", _DIMENSIONS_RE, _DIM_COLS)],
         "finding.md": ["## Evidence", "## Why this is a defect", "## How to verify the fix",
-                       "## Validation", "## Objection", "## Remediation", "## Verification"],
-        "class-finding.md": ["## Pattern", "## Census", "## Validation", "## Root cause",
-                             "## Global strategy", "## Norm ruling", "## Remediation",
-                             "## Verification"],
+                       "## Validation", "## Refusal", "## Objection", "## Remediation",
+                       "## Admitted scope", "### Covers", "### Does not cover",
+                       "## Verification"],
+        "class-finding.md": ["## Pattern", "## Census", "## Validation", "## Refusal",
+                             "## Root cause", "## Global strategy", "## Norm ruling",
+                             "## Remediation", "## Admitted scope", "### Covers",
+                             "### Does not cover", "## Verification"],
+        "construal.md": list(CONSTRUAL_SECTIONS),
         "pass.md": ["## Charter", "## Coverage", "## Findings", "## Handoff"],
         "plan.md": ["## Batch validation results", "## Census results", "## Fix plan",
                     "## Execution log"],
@@ -7355,6 +8672,11 @@ def selftest():
     _REQ_FM_BY_TEMPLATE = {
         "finding.md": frozenset(SCHEMA_BLOCK_FIELDS),
         "class-finding.md": frozenset(CANONICAL_SCHEMA) | _CF_PROVENANCE,
+        # §4 rule 9: the construal template's field set derives from the ONE
+        # CONSTRUAL_SCHEMA, the same way the two finding templates derive from
+        # CANONICAL_SCHEMA — a field added to the schema without reaching the template
+        # (or the reverse) is drift the exact-set check names.
+        "construal.md": frozenset(CONSTRUAL_SCHEMA),
     }
     _xcheck_text = (_rp50_root / "XCHECK.md").read_text(encoding="utf-8")
     # Fixed-default §2 fields = those whose §2 canonical-record value is a single
@@ -7363,6 +8685,18 @@ def selftest():
     # (uppercase/hyphen). Derived from §2, not a second value list.
     _S2_CONST = {f: v for f, v in (section2_canonical_field_values(_xcheck_text) or {}).items()
                  if re.fullmatch(r"[a-z0-9]+", v)}
+    # Which template is checked against WHICH fixed-default source. The §2 constants belong
+    # to the §2 canonical record, so only the templates that instantiate that record are
+    # held to them. `construal.md` is a different artifact with its own schema and its own
+    # `status` vocabulary (§4 rule 9: proposed/admitted/refused) — comparing it against §2's
+    # `status: reported` would be holding two records that were never the same record to
+    # one default. Derived from the schema each template's field set came from, not a hand
+    # list of filenames.
+    _FM_VALUE_SOURCE = {
+        "finding.md": _S2_CONST,
+        "class-finding.md": _S2_CONST,
+        "construal.md": {},
+    }
 
     def _norm_null(v):
         # `_parse_frontmatter` folds YAML null to '', so compare `null` and '' as equal.
@@ -7432,7 +8766,7 @@ def selftest():
             # (round-11 root, adjacent branch to the table scan) is not read as structure.
             slines = _strip_nonstructure(text).split("\n")
             for n in needles:
-                if isinstance(n, str) and n.startswith("## "):
+                if isinstance(n, str) and re.match(r"^#{1,6} ", n):
                     # SECTION HEADING: a REAL ATX header line — CommonMark allows 0-3 leading
                     # spaces (4+ columns is an indented code block, NOT a heading; enforced by
                     # `_atx_indent_ok`) and GFM tolerates trailing spaces — not an arbitrary
@@ -7489,7 +8823,7 @@ def selftest():
                 problems.append(f"{fname}: frontmatter missing canonical field {field!r}")
             for field in sorted(keys - req):
                 problems.append(f"{fname}: frontmatter has non-canonical field {field!r}")
-            for field, want in _S2_CONST.items():
+            for field, want in _FM_VALUE_SOURCE.get(fname, _S2_CONST).items():
                 if field in fm and _norm_null(fm[field]) != _norm_null(want):
                     problems.append(
                         f"{fname}: frontmatter field {field!r} value {_norm_null(fm[field])!r}"
@@ -7617,7 +8951,7 @@ def selftest():
           and any("finding.md" in p and "section header" in p and "Verification" in p for p in mut130_fenceclose)
           and any("AUDIT-text.md" in p and "dimensions table header" in p for p in mut130_tablecomment)
           and any("finding.md" in p and "section header" in p and "How to verify the fix" in p for p in mut130_headcomment))
-    print(f"{'PASS' if ok else 'FAIL'}: the six shipped templates/ files carry the required sections, fields and tables as ORDINARY MARKDOWN LINES — a LINE-BASED drift check, NOT a CommonMark parser (F-0130 §8 rule 5 exception): it does NOT detect structure hidden inside raw HTML (`<div>...`) or other embeddings, and targets ACCIDENTAL drift in our own templates (a renamed/missing section, a dropped/wrong field, a corrupted plain-Markdown table), not deliberate obfuscation of them. Within that scope, section headings are matched as real ATX lines and table headers as whole pipe-table header cells (`_section_table` cells EQUAL the declared columns, not a substring — NO `n not in text` branch survives for structural content, F-0130 round-8), every raw-line structural recognizer reading them through the ONE CommonMark leading-indent rule (`_atx_indent_ok`: 0-3 leading spaces is a heading/table/fence, 4+ columns is indented code) with NON-RENDERED blocks — fenced code blocks AND HTML comment blocks — stripped FIRST by the ONE `_strip_nonstructure` (fence delimiters CommonMark-exact — a closing fence is a same-char run of >= length followed ONLY by whitespace, so a ```not-a-close interior line does not end the block; an HTML comment block opens on a `<!--` line and ends on the first `-->` line, mutually exclusive with fences) so a ```-fenced, 4-column-indented, OR `<!-- ... -->`-commented EXAMPLE/copy of a heading/table is not read as document structure (F-0130 round-9/10/11); the finding/CF frontmatter KEY SET is checked EXACTLY (missing AND extra → reject) against CANONICAL_SCHEMA (finding.md carries the full §2 record incl blocked/norm-ruling, class-finding.md the full schema incl members + the CF-only `created-by` provenance field), with NO duplicate singleton key AND NO bad-form field (the parser's own dup + badform signals, not a second judgement); fixed-default §2 VALUES (status=reported, attempts=0, the null defaults) are checked against the §2 record; and AUDIT-*.md §5 limits are checked against the XCHECK.md §10 defaults table, reading ONLY the §5 body with HTML comments stripped — so a stripped OR html-commented `## How to verify the fix`, a collapsed COVERED polarity, an `id` deleted from frontmatter (even with a body decoy), a non-canonical `future-field` added, blocked/norm-ruling renamed out of the CF, a flipped `status: reported`->`closed`, a deleted nullable `class:`, a corrupted `max_findings_per_pass` default (even with a decoy `15` hidden in a comment), two contradicting `status:` singletons that last-wins-collapse to a canonical record, a §2-undeclared `unit: {{a: b}}` flow-mapping form that parses to a mangled value under a canonical key, a dimensions table header commented out of the document (`<!-- | key | ... | -->`, byte sequence surviving in prose), a section heading surviving only inside a paragraph, a real section heading wrapped in a ```-fenced code block, a real dimensions table header+delimiter wrapped in a ```-fenced code block, a real heading indented 4 columns into code (`    ## ...`), a real heading hidden behind a fence whose ```not-a-close interior run fails to close it, a real dimensions table header+delimiter wrapped in a multi-line HTML comment, and a real section heading wrapped in a multi-line HTML comment are each caught — while a heading with 0-3 leading and trailing spaces stays accepted (F-0130)"
+    print(f"{'PASS' if ok else 'FAIL'}: the seven shipped templates/ files carry the required sections, fields and tables as ORDINARY MARKDOWN LINES — a LINE-BASED drift check, NOT a CommonMark parser (F-0130 §8 rule 5 exception): it does NOT detect structure hidden inside raw HTML (`<div>...`) or other embeddings, and targets ACCIDENTAL drift in our own templates (a renamed/missing section, a dropped/wrong field, a corrupted plain-Markdown table), not deliberate obfuscation of them. Within that scope, section headings are matched as real ATX lines and table headers as whole pipe-table header cells (`_section_table` cells EQUAL the declared columns, not a substring — NO `n not in text` branch survives for structural content, F-0130 round-8), every raw-line structural recognizer reading them through the ONE CommonMark leading-indent rule (`_atx_indent_ok`: 0-3 leading spaces is a heading/table/fence, 4+ columns is indented code) with NON-RENDERED blocks — fenced code blocks AND HTML comment blocks — stripped FIRST by the ONE `_strip_nonstructure` (fence delimiters CommonMark-exact — a closing fence is a same-char run of >= length followed ONLY by whitespace, so a ```not-a-close interior line does not end the block; an HTML comment block opens on a `<!--` line and ends on the first `-->` line, mutually exclusive with fences) so a ```-fenced, 4-column-indented, OR `<!-- ... -->`-commented EXAMPLE/copy of a heading/table is not read as document structure (F-0130 round-9/10/11); the finding/CF frontmatter KEY SET is checked EXACTLY (missing AND extra → reject) against CANONICAL_SCHEMA (finding.md carries the full §2 record incl blocked/norm-ruling, class-finding.md the full schema incl members + the CF-only `created-by` provenance field), with NO duplicate singleton key AND NO bad-form field (the parser's own dup + badform signals, not a second judgement); fixed-default §2 VALUES (status=reported, attempts=0, the null defaults) are checked against the §2 record; and AUDIT-*.md §5 limits are checked against the XCHECK.md §10 defaults table, reading ONLY the §5 body with HTML comments stripped — so a stripped OR html-commented `## How to verify the fix`, a collapsed COVERED polarity, an `id` deleted from frontmatter (even with a body decoy), a non-canonical `future-field` added, blocked/norm-ruling renamed out of the CF, a flipped `status: reported`->`closed`, a deleted nullable `class:`, a corrupted `max_findings_per_pass` default (even with a decoy `15` hidden in a comment), two contradicting `status:` singletons that last-wins-collapse to a canonical record, a §2-undeclared `unit: {{a: b}}` flow-mapping form that parses to a mangled value under a canonical key, a dimensions table header commented out of the document (`<!-- | key | ... | -->`, byte sequence surviving in prose), a section heading surviving only inside a paragraph, a real section heading wrapped in a ```-fenced code block, a real dimensions table header+delimiter wrapped in a ```-fenced code block, a real heading indented 4 columns into code (`    ## ...`), a real heading hidden behind a fence whose ```not-a-close interior run fails to close it, a real dimensions table header+delimiter wrapped in a multi-line HTML comment, and a real section heading wrapped in a multi-line HTML comment are each caught — while a heading with 0-3 leading and trailing spaces stays accepted (F-0130)"
           + ("" if ok else f" -> clean={clean130} sec={mut130_sec} html={mut130_html} cov={mut130_cov} fm={mut130_fm} cf={mut130_cf} val={mut130_val} del={mut130_del} lim={mut130_lim} extra={mut130_extra} limdecoy={mut130_limdecoy} dup={mut130_dup} badform={mut130_badform} tablehdr={mut130_tablehdr} headprose={mut130_headprose} headfence={mut130_headfence} tablefence={mut130_tablefence} headindent={mut130_headindent} headok={mut130_headok} fenceclose={mut130_fenceclose} tablecomment={mut130_tablecomment} headcomment={mut130_headcomment}"))
     failed += 0 if ok else 1
 
@@ -7800,10 +9134,14 @@ def selftest():
         'xcheck-remediate': [
             'the mandatory in-session sequence: validate → census → plan → fix → self-check; no step skipped or reordered',
             'It must be that 16-hex form: an arbitrary string (e.g. `not-a-session-id`) does not prove a producer was identified.',
+            # §7 scope typing: the residue half is the load-bearing one, so its control
+            # sentence is pinned like every other role contract (F-0129).
+            'The residue half is mandatory and is the load-bearing one: a coverage claim with no stated limit reads as complete while admitting nothing about its edges.',
         ],
         'xcheck-verify': [
             'every ID must still be in status `fixed` (§5)',
             'Your job is to prove the fix wrong, not to confirm it.',
+            'check **demanded ⊆ admitted**: any claim the material itself makes — a docstring, a message, a README line, a §-norm — that reaches past what the fix admits is a promise-width defect and reopens the finding',
         ],
         'xcheck-status': [
             'This session **writes nothing** — it is not a writing session in the §4 rule 8 sense',
@@ -7826,6 +9164,14 @@ def selftest():
         "xcheck-remediate": "create every temporary artifact (scratch copies, test harnesses, fixtures, mutation copies, marker files) OUTSIDE the project tree — in a system temp dir — never inside the project.",
         "xcheck-verify": "create every temporary artifact (mutation copies, test harnesses, fixtures, marker files) OUTSIDE the project tree — in a system temp dir — never inside the project.",
     }
+    # §4 rule 9 / §5: the construal and refusal contracts, byte-identical across every
+    # role the orchestrator DISPATCHES (Planner, Auditor, Remediator, Verifier). Triage is
+    # the human gate and is never dispatched by decide(), so it carries neither. Sourced
+    # from ONE canonical text and pinned whole (F-0129): a paraphrase per skill is how a
+    # control action gets inverted in one copy while the other four stay right.
+    _GATED129 = ("xcheck-plan", "xcheck-audit", "xcheck-remediate", "xcheck-verify")
+    _CANON_CONSTRUAL = '## Construal (§4 rule 9)\n\nOff by default (§10 `construal_gate`). When the orchestrator dispatches you with a charter that begins "Before any effect on the material, write your OPERATIONAL CONSTRUAL", that charter IS the gate: copy `audit/templates/construal.md` to `audit/construals/<key>.md` — the key is `XCHECK_CONSTRUAL_KEY`, read it from the `Orchestration context` line appended to your role-prompt, since your shell `env` may not expose it — fill all five sections with real content, set `status: proposed` and `session:` to your own `XCHECK_SESSION_ID`, then STOP. Touch nothing else: writing the construal IS the whole session.\n\nNever set `status: admitted` and never fill `admitted-by:`. A producer that admits its own construal has licensed its own misreading; both `xcheck lint` and the gate refuse it by name. Admission is a separate act by a different party — a human, or a `construal_envelope` declared in AUDIT.md with a live `recheck-by` date. Your construal is EVIDENCE the admitter inspects, never authority you grant yourself.\n\nState your own reading, not a paraphrase of the charter. If your task frame and the charter\'s words diverge, that divergence is the point of the file and the reason the gate exists.'
+    _CANON_REFUSAL = "## Refusal (§5)\n\nIf you accept a charter and cannot execute it, record a refusal — do not halt silently and do not quietly substitute a narrower task. Set `refusal:` in the finding's frontmatter to exactly one reason from the closed vocabulary — `out-of-competence`, `blocked-dependency`, `charter-ambiguous`, `norm-conflict`, `material-missing`, `cost-exceeded` — and write what is actually missing, and what would unblock it, into that finding's `## Refusal` section. Both halves are required: `xcheck lint` rejects a bare reason code, because a category name carries no obstacle forward.\n\nDo NOT change the finding's `status`. A refusal is about this attempt, not about the finding: the charter stays in force, the work is still owed, and the next session inherits both the work and your reasons. A refusal is not a dispute (which contests the finding itself) and not a rejection (which is Triage's call, and Triage is the human)."
     # every writer carries the whole lock-discipline and session-hygiene blocks; the Verifier
     # additionally carries the verifier-independence block (its `STOP — you cannot prove
     # independence` action).
@@ -7833,6 +9179,9 @@ def selftest():
                          ("session-hygiene", _CANON_SESSION_HYGIENE[n])] for n in _WRITERS129}
     _CANON_BLOCKS["xcheck-verify"] = (_CANON_BLOCKS["xcheck-verify"]
                                       + [("verifier-independence", _CANON_VERIFIER_INDEPENDENCE)])
+    for _g in _GATED129:
+        _CANON_BLOCKS[_g] = _CANON_BLOCKS[_g] + [("construal-contract", _CANON_CONSTRUAL),
+                                                 ("refusal-contract", _CANON_REFUSAL)]
 
     def _role_prompt_problems(skills_root):
         problems = []
@@ -7896,7 +9245,7 @@ def selftest():
           and any("xcheck-plan" in p and "lock-discipline" in p for p in mut129_mkdir)
           and any("xcheck-verify" in p and "verifier-independence" in p for p in mut129_stop)
           and any("xcheck-verify" in p and "session-hygiene" in p for p in mut129_hyg))
-    print(f"{'PASS' if ok else 'FAIL'}: every writing skill carries the canonical lock-discipline and session-hygiene BLOCKS byte-for-byte and xcheck-verify carries the verifier-independence BLOCK byte-for-byte, and the role sentences (triage human-decides + never-touch-finding-files, remediate sequence + 16-hex fixed-by, verify status-`fixed` gate + adversarial stance, status writes-nothing + read-only lock) are present verbatim — so an inverted control ACTION inside a block (`do NOT mkdir`->`DO mkdir`, `STOP — you cannot prove independence`->`CONTINUE`, `OUTSIDE the project tree`->`INSIDE`), a renamed `XCHECK_LOCK_INHERITED`, a canonical-token inversion that keeps the keyword, and a widened triage write-surface are each caught; this confirms the shipped skills carry the canonical contract TEXT unchanged, NOT that the text is meaningful (that is human review) (F-0129)"
+    print(f"{'PASS' if ok else 'FAIL'}: every writing skill carries the canonical lock-discipline and session-hygiene BLOCKS byte-for-byte, xcheck-verify carries the verifier-independence BLOCK byte-for-byte, and every DISPATCHED role (plan/audit/remediate/verify — not Triage, which is the human gate) carries the canonical construal (§4 rule 9) and refusal (§5) BLOCKS byte-for-byte, and the role sentences (triage human-decides + never-touch-finding-files, remediate sequence + 16-hex fixed-by, verify status-`fixed` gate + adversarial stance, status writes-nothing + read-only lock) are present verbatim — so an inverted control ACTION inside a block (`do NOT mkdir`->`DO mkdir`, `STOP — you cannot prove independence`->`CONTINUE`, `OUTSIDE the project tree`->`INSIDE`), a renamed `XCHECK_LOCK_INHERITED`, a canonical-token inversion that keeps the keyword, a widened triage write-surface, an INVERTED construal self-admission ban (`Never set `status: admitted``->`Always set`), an inverted refusal status rule (`Do NOT change`->`DO change`), a weakened scope residue (`mandatory`->`optional`), a dropped `demanded ⊆ admitted` check, and a PARAPHRASE of the construal block that keeps its meaning are each caught; this confirms the shipped skills carry the canonical contract TEXT unchanged, NOT that the text is meaningful (that is human review) (F-0129)"
           + ("" if ok else f" -> clean={clean129} tri={mut129_tri} ver={mut129_ver} wr={mut129_wr} inh={mut129_inh} mkdir={mut129_mkdir} stop={mut129_stop} hyg={mut129_hyg}"))
     failed += 0 if ok else 1
 
@@ -8216,6 +9565,22 @@ def cmd_lint(project: Path):
     # is what makes 'add a field to §2 without a validator' impossible (the F-0077 close).
     for it in canonical_schema_meta_issues(audit / "XCHECK.md"):
         issues.append(it)
+
+    # §4 rule 9: validate every construal record under audit/construals/. Unconditional —
+    # a construal that exists is a record this project keeps, so it is linted whether or
+    # not §10 `construal_gate` is on; an absent or empty directory is not an error. The
+    # ROUTING consequence of an invalid construal is the gate's business, not lint's.
+    for it in construal_issues(audit):
+        issues.append(it)
+
+    # §7 admitted scope, gated by §10 `scope_typing` (default off). Read through the Conf
+    # BOUNDARY, so the flag arrives as a real bool and a typo is an addressed error rather
+    # than a silent `off` (F-0113). Lint-surface only: this checks that a scope
+    # DECLARATION exists with both halves, which is a document-completeness property; the
+    # demanded ⊆ admitted judgement is the Verifier's and is not modelled in code.
+    if conf_flag(load_conf(audit), "scope_typing"):
+        for it in admitted_scope_issues(audit):
+            issues.append(it)
 
     for fid, r in rows.items():
         fm = fnd.get(fid)

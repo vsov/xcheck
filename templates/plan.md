@@ -38,4 +38,10 @@ updated: YYYY-MM-DD
 
 ## Execution log
 <!-- Remediator, steps 4–5. What was actually changed (files/sections/
-     commits) + self-check result per finding before setting status fixed. -->
+     commits) + self-check result per finding before setting status fixed.
+     When setting a finding `fixed`, also fill its `admitted-scope:` and its
+     `## Admitted scope` section — BOTH `### Covers` and `### Does not cover`
+     (§7; enforced by lint when §10 `scope_typing` is on). If you accepted a
+     finding in this batch and cannot execute it, record a `refusal:` on that
+     finding with its `## Refusal` prose and leave its `status` untouched (§5) —
+     the charter stays in force and the batch continues with the rest. -->
