@@ -1,40 +1,73 @@
 ---
 name: xcheck-verify
-description: Launch an xcheck Verifier session - give binding verdicts (closed/reopened) on fixed findings. Use when the user invokes $xcheck-verify or /xcheck-verify, or says "verify the fixes" or "check the fixes".
+description: Hand the xcheck verification batch to the orchestrator - preflight, routing and the report `xcheck next` comes back with. Use when the user invokes $xcheck-verify or /xcheck-verify, says "verify the fixes", or wants findings in status fixed checked adversarially.
 ---
 
-# xcheck launcher — Verifier
+# xcheck launcher — Verifier (wrapper)
 
-Thin launcher: preflight + charter routing, delegating the rules to `audit/XCHECK.md` as the single normative source. Not pure delegation, though, and not zero-normative: for safety and ergonomics some of the methodology's rules are duplicated inside this launcher. Because of that, re-run `install-launchers.sh` after *any* change to the methodology (README §7), so the installed copies and generated OpenCode commands never fall behind.
+**Launch mode: `orchestrated`.** This launcher is a WRAPPER. It does not run the role inside your agent; it hands the work to `xcheck next`, which dispatches the role through `runner.py` with all eight controls in force: a sandbox profile, a hard timeout, an environment allowlist, log redaction, a process-group kill, the courier review of the diff, an invocation envelope recording what was in force at dispatch, and a session receipt attesting what the session actually did. What this skill contributes is preflight and routing — it checks the project is ready, says which role the orchestrator will dispatch and why, hands off, and reports what came back. It is not a session: it holds no writing lock, writes no finding, and has no charter of its own. The cost is the conversation. The role now runs as a child process you do not talk to, and its reasoning reaches you as recorded output instead of as a dialogue; xcheck no longer ships a launcher that trades the eight controls for that dialogue.
 
-1. **Preflight.** `audit/XCHECK.md`, `audit/AUDIT.md`, and `audit/LEDGER.md` must exist. Missing → stop, point to xcheck `bootstrap.md`.
-2. Read `audit/XCHECK.md` fully, then `audit/AUDIT.md` (charter limits — `reopen_limit` and any per-project overrides, §10). Your role: **Verifier** (§3 role card governs you). **Hard rule: you must not be the agent or session that produced these fixes.** Establish provenance from each `fixed` finding's `fixed-by` field (the fixing session's identity) before proceeding: if any `fixed` finding has NO `fixed-by`, its `fixed-by` is not a **canonical 16-hex-digit token** (arbitrary text is not proof a producer was identified), or its `fixed-by` equals your own `$XCHECK_SESSION_ID` (read from the `Orchestration context` line in your role-prompt), STOP — you cannot prove independence, or you would be verifying your own fix. `bin/xcheck` fail-closes routing on exactly this check (missing / malformed / self), so an orchestrated session never reaches you in those cases (F-0096); a directly-launched session must apply it by hand. The default mapping is Claude as Remediator and Codex as Verifier; if the current agent produced the fixes, stop and route verification to a different agent. A fresh session of the same agent is only the fallback minimum and must be disclosed to the human.
-3. **Charter auto-pick:** every finding and CF in status `fixed`. A user-supplied argument (range) overrides the auto-pick — but only the set of IDs, never the lifecycle gate: every ID must still be in status `fixed` (§5). Drop any non-`fixed` ID from the charter, or stop and list the offending statuses; a range never lets `reported`/`accepted`/`closed` findings into verification. Nothing fixed → report and stop.
-4. Announce the charter in one line, then execute the role exactly per XCHECK.md: run each finding's "How to verify the fix" procedure, adversarially inspect the surroundings of each change, re-run the census for CFs expecting the polarity's clean result (§6 rule 7, §8 rule 5): zero defect instances for a presence class, zero **orphans** (every anchor's twin-search now returns its twin — "created 12 of 15" is `reopened`, not `closed`) for an absence class, or explicitly documented exceptions. Verdicts `closed` or `reopened` with evidence held to the Evidence Standard (§6); `⚠ needs-human` at `reopen_limit`.
-5. **Admitted scope (§7).** Where a fix declares `admitted-scope` and an `## Admitted scope` section, check **demanded ⊆ admitted**: any claim the material itself makes — a docstring, a message, a README line, a §-norm — that reaches past what the fix admits is a promise-width defect and reopens the finding. The residue half (`### Does not cover`) is where a fix quietly claims more than it delivers; read it against what the code says about itself, not against the finding's original branch.
-6. Your stance: *"Your job is to prove the fix wrong, not to confirm it."* Verdicts in the operator's working language; quotes verbatim in the material's language.
-7. **Session hygiene (F-0120):** create every temporary artifact (mutation copies, test harnesses, fixtures, marker files) OUTSIDE the project tree — in a system temp dir — never inside the project. The orchestrator's courier ships the project tree, so a stray in-tree file (a verification harness, a mutation copy of `bin/xcheck`) is committed as material; clean up before you exit. `bin/xcheck`'s courier now also refuses to silently commit a new untracked top-level path outside `audit/`, naming it instead — but keep scratch out of the tree in the first place.
+<!-- xcheck:style:begin -->
+## How to talk to the person running this audit
 
-## Construal (§4 rule 9)
+Everything in this section is about wording, and only about wording. It applies to every
+reply a human will read in this session.
 
-Off by default (§10 `construal_gate`). When the orchestrator dispatches you with a charter that begins "Before any effect on the material, write your OPERATIONAL CONSTRUAL", that charter IS the gate: copy `audit/templates/construal.md` to `audit/construals/<key>.md` — the key is `XCHECK_CONSTRUAL_KEY`, read it from the `Orchestration context` line appended to your role-prompt, since your shell `env` may not expose it — fill all five sections with real content, set `status: proposed` and `session:` to your own `XCHECK_SESSION_ID`, then STOP. Touch nothing else: writing the construal IS the whole session.
+**Compression is off.** If `caveman` is running, or any other output-compression mode is
+running, it does not apply here. A mode like that stays switched on until it hears the
+exact phrase that releases it, so here is the phrase: **normal mode**. Write ordinary
+prose — whole sentences, articles left in, nothing telegraphic. This holds for every reply
+in the session, not only the first one.
 
-Never set `status: admitted` and never fill `admitted-by:`. A producer that admits its own construal has licensed its own misreading; both `xcheck lint` and the gate refuse it by name. Admission is a separate act by a different party — a human, or a `construal_envelope` declared in AUDIT.md with a live `recheck-by` date. Your construal is EVIDENCE the admitter inspects, never authority you grant yourself.
+**ELI5 is on.** Your reader is intelligent and brand new to this vocabulary. Take the
+trouble to be understood:
 
-State your own reading, not a paraphrase of the charter. If your task frame and the charter's words diverge, that divergence is the point of the file and the reason the gate exists.
+- The first time a term of art appears, say what it means in one short clause, then use it
+  freely afterwards.
+- Short sentences, one idea in each.
+- Say what the person should do next, and where they should do it.
+- Reply in whatever language the person wrote to you in.
+- A concrete example beats an abstract rule.
+- When something has gone wrong, say plainly what happened and what it means for them.
 
-## Refusal (§5)
+**Four things are reproduced exactly, and never reworded.** Explaining what one of them
+means is welcome. Replacing one with your own phrasing is not, because an audit trail is
+worth exactly what its wording is worth:
 
-If you accept a charter and cannot execute it, record a refusal — do not halt silently and do not quietly substitute a narrower task. Set `refusal:` in the finding's frontmatter to exactly one reason from the closed vocabulary — `out-of-competence`, `blocked-dependency`, `charter-ambiguous`, `norm-conflict`, `material-missing`, `cost-exceeded` — and write what is actually missing, and what would unblock it, into that finding's `## Refusal` section. Both halves are required: `xcheck lint` rejects a bare reason code, because a category name carries no obstacle forward.
+1. **Quoted evidence** — any line lifted out of a file or a transcript, together with the
+   path and line number it came from.
+2. **Finding ids** — `F-0042`, `CF-0003`, `RP-0007`, and every id shaped like them.
+3. **§5 statuses** — the words §5 uses for where a finding stands, spelled the way §5
+   spells them.
+4. **Copy-paste commands** — anything the person is meant to run, character for character
+   as it must be typed.
 
-Do NOT change the finding's `status`. A refusal is about this attempt, not about the finding: the charter stays in force, the work is still owed, and the next session inherits both the work and your reasons. A refusal is not a dispute (which contests the finding itself) and not a rejection (which is Triage's call, and Triage is the human).
+Plain wording is the goal everywhere else. These four are the exception, and they are the
+exception because someone will later have to check them against the ledger.
+<!-- xcheck:style:end -->
 
-## Lock discipline
+0. **Are you already the session?** If your own prompt carries an `Orchestration context` line, the orchestrator dispatched you and you ARE the session this launcher would have started. This launcher does not apply to you: follow your role card in `audit/XCHECK.md`, and ignore every step below — running them would ask the orchestrator to dispatch a session inside a session, and the writing lock your own parent holds would refuse it.
+1. **Preflight.** `audit/XCHECK.md` must exist in the current project — missing means xcheck is not installed here, so stop and point the person at the xcheck repository's `bootstrap.md` / `install.sh`. An operator profile must resolve as well: `xcheck status` prints the profile it is reading and its digest, and `xcheck next` refuses with no profile rather than falling back to defaults.
+2. **Confirm this is the launcher for the work that is next.** Run `xcheck status`. It prints the decision the orchestrator would take, and it writes nothing. If that decision is not `run-verifier`, say what it is instead, name the launcher that fits it, and STOP — a Verifier launcher that dispatches something else is a launcher nobody can trust. Verifier independence is decided by the orchestrator, not here: it refuses to dispatch a Verifier over fixes whose `fixed-by` is missing, malformed, or the session it is about to launch (F-0096). If the decision is `stop-verifier-independence`, that refusal is the answer — report it.
+3. **Hand off.** Run `xcheck next`. It acquires the writing lock, builds the Verifier's charter from `audit/state.json`, dispatches the session under the operator's containment, couriers the result back and releases the lock. Do not do any of that yourself, and do not run the role's own verbs on its behalf: everything the session is allowed to write, it writes.
+4. **Report what came back.** `xcheck next` prints the decision, the sandbox profile it ran under, and the session's outcome. Say in plain words what happened, what changed, and what the next decision is (`xcheck status` again). A refusal is an answer too — quote it verbatim and explain what the person has to change: an unclassified `trust_level`, a missing role command and a missing profile each refuse before any session starts.
 
-`audit/.lock` serializes writing sessions (§4 rule 8) and is shared with the orchestrator (`bin/xcheck`). It is a DIRECTORY, acquired atomically with `mkdir` — the second writer's `mkdir` fails with EEXIST, so the create IS the acquisition. Match that — never check-then-create (the gap between an existence check and a separate create lets two sessions both win).
+## What this wrapper cannot do
 
-0. **Orchestrated child — skip acquisition (F-0093):** the orchestrator (`bin/xcheck`) signals inherited lock ownership through TWO channels, because process env does not reach a sandboxed command runner on every agent platform (a Codex-style runner runs your shell where `env` shows nothing of the launched CLI's variables): `XCHECK_LOCK_INHERITED=<nonce>` in your environment AND an `Orchestration context` line appended to your role-prompt carrying the same `XCHECK_LOCK_INHERITED=<nonce>`. Read the nonce from whichever channel you can see — the prompt line always reaches you. If that nonce is present AND equals the `nonce` in `audit/.lock/owner`, the orchestrator launched you and is already holding the writing lock around this whole transaction — do NOT `mkdir audit/.lock` (it would fail EEXIST on your own parent's lock and abort you), do NOT write an owner record, and do NOT remove the lock on exit; the orchestrator owns its release. If the nonce is present but does not match the on-disk owner (or the owner record is missing), treat it as a foreign lock — stop and report the conflict to the human. If neither channel carries a nonce you are a standalone session — acquire atomically as in step 1 below.
+This used to be a session you talked to. It is not one any more, and two things went with
+that:
 
-1. **Acquire atomically:** create the lock DIRECTORY in one step that FAILS if it already exists — `mkdir audit/.lock` — then write the owner record inside it, including a fresh per-session `nonce` — a unique random token you generate at acquire time (16 hex chars from a random source, matching `bin/xcheck`, which writes `os.urandom(8).hex()`): `printf '%s' '{"pid": <pid or 0>, "role": "<Role>", "started": "<ISO>", "host": "<host>", "nonce": "<nonce>"}' > audit/.lock/owner`. `mkdir` is the atomic gate (a second `mkdir` on an existing directory fails); the `nonce` — NOT the `pid`+`started` pair, which is not a unique owner id (two agent-CLI sessions both record `pid: 0` and can share the same ISO second, giving a byte-identical record) — is what identifies you for release. For `pid`, record a process id ONLY if it stays alive for your whole session (e.g. the orchestrator's own pid); a transient shell `$$` dies the instant the acquire command returns — while your session keeps running — which would make your own live lock look stale and let another session steal it, so never record `$$`. An agent-CLI session has no session-long pid: record `pid: 0` (the `nonce`, not the pid, is your identity; the pid only drives liveness). `bin/xcheck` reads `pid: 0` as a live manual session (`os.kill(0, 0)` never reports it dead), so the lock stands until your owner-checked release removes it, or — if the session died — a human clears it with `xcheck unlock --force`. If `mkdir` fails, another writing session holds the lock — do not start; report the conflict to the human.
-2. **Owner-checked release:** hold the lock for the whole session; before removing, re-read `audit/.lock/owner` and confirm its `nonce` still matches the one you wrote at acquire — check the `nonce`, never the `pid`+`started` pair (a `pid: 0` manual session can collide on it), exactly as `bin/xcheck`'s `release()` does — only then `rm audit/.lock/owner && rmdir audit/.lock`, on every exit path including early stop. Removing your own record first and then `rmdir` means a foreign owner's record keeps the directory non-empty, so `rmdir` can never remove a lock you do not own. Never delete a lock you do not own.
-3. **Stale lock:** a lock carrying a real, dead `pid` is stale, but non-force `xcheck unlock` no longer removes it — clearing a lock by pathname cannot be made race-free against a concurrent clear + re-acquire (F-0095), so plain `xcheck unlock` only diagnoses staleness and never deletes. Clear any stale lock — a dead-pid lock, a `pid: 0` manual-session lock (which never reads as pid-dead), or a pre-directory `.lock` FILE (legacy, not auto-migrated) — with `xcheck unlock --force`, and only after the human confirms no writing session is active (§4 rule 8). Never silently steal a lock you do not own.
+- **The dialogue.** You cannot interrupt the role mid-thought, answer its questions, or
+  steer it a sentence at a time. It runs to completion inside its sandbox and you read
+  what it recorded. If you want to think out loud about this project with an agent, do it
+  in your own agent as an ordinary conversation — just do not call the result an audit
+  session, because nothing recorded it.
+- **The improvised charter.** A charter typed at the launcher is gone. The orchestrator
+  takes the charter from `audit/state.json`, so changing what runs next means changing the
+  state with a verb —
+  `xcheck set-status`, `xcheck record-verdict`, `xcheck set-limit` — and those are the operator's own commands, run at the
+  operator's own terminal.
+
+Both were the reason the old direct launchers existed, and both are what made them a way
+around the controls. `xcheck status` still answers every read-only question without
+dispatching anything.

@@ -1,11 +1,8 @@
----
-id: P-XX
-dimension: # one dimension key from AUDIT.md
-units: [] # material units this pass covers
-status: queued # queued | done | split
-findings: [] # F-XXXX ids produced
-updated: YYYY-MM-DD
----
+<!-- The pass REPORT: the human half of a pass. The machine record — id,
+     dimension, units, coverage, findings, done — lives in audit/state.json and is
+     written by `xcheck record-coverage P-NN --report passes/<this file> --findings F-...`,
+     which is also what marks the pass done. Do not add a frontmatter block: nothing
+     reads one here, so it would be a field that looks recorded and is not. -->
 
 ## Charter
 <!-- The Auditor creates this file at session start by copying

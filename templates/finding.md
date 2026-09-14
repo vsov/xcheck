@@ -1,4 +1,6 @@
 ---
+# GENERATED FROM audit/state.json — DO NOT EDIT THIS BLOCK
+# an edit here is refused as drift; change state with an xcheck write verb
 id: F-XXXX
 title: # short title of the defect (operator's working language)
 severity: # critical | major | minor | info
@@ -6,12 +8,12 @@ dimension: # one dimension key from AUDIT.md
 unit: # material unit; YAML list if the finding spans units
 status: reported
 class: null # CF-XXXX once absorbed by a class finding
-attempts: 0 # the Remediator increments this when re-taking a reopened finding
+attempts: 0 # `xcheck record-verdict --verdict reopened` increments this; at `reopen_limit` it also sets `next: ⚠ needs-human`, and only `xcheck set-status <ID> planned --retake human:<who>` resets it
 recurrence-of: null # or F-XXXX/CF-XXXX — set when this finding is a fresh recurrence of a TERMINAL ancestor (§3 dedup, §9 rule 8); the ancestor stays terminal
 blocked: null # or `norm-ratification` — a planned CF halted at the §8 gate (paired with `norm-ruling`); null for an ordinary finding
-norm-ruling: null # §8 rule 8 machine gate on a blocked CF: `pending`, then the winning norm id (e.g. N1 or N1-over-N4) once the norm owner rules; null for an ordinary finding
-refusal: null # §5 typed refusal — one of out-of-competence | blocked-dependency | charter-ambiguous | norm-conflict | material-missing | cost-exceeded when a role ACCEPTED this charter and cannot execute it; fill `## Refusal` too, and leave `status` untouched
-admitted-scope: null # §7 — the routes/inputs/call sites this fix's guarantee covers (a scalar or a flat list); required with `## Admitted scope` when the Remediator sets `fixed` and §10 `scope_typing` is on
+norm-ruling: null # §8 rule 8 machine gate, raised by `xcheck block-on-norm` and lifted only by `xcheck record-ruling --norm ... --ruled-by human:<owner>` on a blocked CF: `pending`, then the winning norm id (e.g. N1 or N1-over-N4) once the norm owner rules; null for an ordinary finding
+refusal: null # §5 typed refusal, recorded with `xcheck record-refusal <ID> --reason ...` — one of out-of-competence | blocked-dependency | charter-ambiguous | norm-conflict | material-missing | cost-exceeded when a finding-charter role (the Remediator or the Verifier) ACCEPTED this charter and cannot execute it; fill `## Refusal` too, and leave `status` untouched (the Planner and an Auditor pass record refusals in their own artifact, not here — §5)
+admitted-scope: null # §7, recorded with `xcheck record-fix <ID> --session ... --scope ...` — the routes/inputs/call sites this fix's guarantee covers (a scalar or a flat list); required with `## Admitted scope` when the Remediator sets `fixed` and §10 `scope_typing` is on
 pass: P-XX # the audit pass that produced this finding
 updated: YYYY-MM-DD
 ---
@@ -46,14 +48,16 @@ updated: YYYY-MM-DD
      Quote re-found? Problem real? -->
 
 ## Refusal
-<!-- Any role that ACCEPTED this charter and cannot execute it (§5). Set the
-     `refusal:` frontmatter field to one reason code, then state HERE what is
-     actually missing and what would unblock it — a bare code names a category
-     and carries no obstacle forward. Do NOT change `status`: a refusal is about
-     this attempt, not about the finding; the charter stays in force and the next
-     session inherits both the work and these reasons. Not a dispute (that
-     contests the finding) and not a rejection (that is Triage's call). Leave
-     empty otherwise. -->
+<!-- A finding-charter role — the Remediator or the Verifier — that ACCEPTED this
+     charter and cannot execute it (§5). Set the `refusal:` frontmatter field to
+     one reason code, then state HERE what is actually missing and what would
+     unblock it — a bare code names a category and carries no obstacle forward.
+     (The Planner records its refusal in AUDIT.md and an Auditor pass in its pass
+     report — they have no finding to carry the field, §5.) Do NOT change
+     `status`: a refusal is about this attempt, not about the finding; the charter
+     stays in force and the next session inherits both the work and these reasons.
+     Not a dispute (that contests the finding) and not a rejection (that is
+     Triage's call). Leave empty otherwise. -->
 
 ## Objection
 <!-- Auditor — only when Validation = disputed (§9 Agent dispute). Exactly ONE
@@ -65,7 +69,7 @@ updated: YYYY-MM-DD
      (files/sections; commit IDs if the project uses git). -->
 
 ## Admitted scope
-<!-- Remediator, together with `status: fixed` (§7; enforced when §10 `scope_typing`
+<!-- Remediator, together with `xcheck record-fix <ID> --session ... --scope ...` (§7; enforced when §10 `scope_typing`
      is on). Declare what this fix's guarantee covers and — mandatory — what it does
      not. BOTH subsections are required: a coverage claim with no stated limit reads
      as complete while admitting nothing about its edges, which is the promise-width

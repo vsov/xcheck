@@ -106,6 +106,36 @@ json.dump(o, open(p, "w", encoding="utf-8"), indent=2)
 PY
   gate; expect "poison: manifest skills=null rejected" 1
 
+  # The style block, poisoned two ways. Deleting it is the obvious case; MOVING it into
+  # frontmatter is the one a presence check would miss, and it is the case that has
+  # actually shipped here before — the OpenCode generator drops everything above the
+  # second `---`, so a block up there is in the file and in nobody's context.
+  reset_payload
+  awk '/<!-- xcheck:style:begin -->/{d=1} /<!-- xcheck:style:end -->/{d=0; next} !d' "$vf" > "$vf.tmp" && mv "$vf.tmp" "$vf"
+  gate; expect "poison: skill without the style block rejected" 1
+
+  # MOVED, not deleted — the block still exists in the file, above the second `---`.
+  # A single awk pass cannot do this (the fences come before the block, so nothing has
+  # been collected yet when it reaches them), and the first attempt silently deleted
+  # instead, making this arm green for the previous arm's reason. python3 is already a
+  # hard requirement of the gate above.
+  reset_payload
+  python3 - "$vf" <<'PY'
+import sys
+p = sys.argv[1]
+lines = open(p, encoding="utf-8").read().splitlines(keepends=True)
+b = next(i for i, l in enumerate(lines) if "xcheck:style:begin" in l)
+e = next(i for i, l in enumerate(lines) if "xcheck:style:end" in l)
+block = lines[b:e + 1]
+rest = lines[:b] + lines[e + 1:]
+close = next(i for i, l in enumerate(rest) if i and l.strip() == "---")
+open(p, "w", encoding="utf-8").writelines(rest[:close] + block + rest[close:])
+PY
+  grep -q -- '<!-- xcheck:style:begin -->' "$vf" || {
+    echo "selftest: FAIL — the frontmatter poison deleted the block instead of moving it" >&2
+    fails=$((fails + 1)); }
+  gate; expect "poison: style block moved into frontmatter rejected" 1
+
   rm -rf "$work"; trap - EXIT INT TERM
   if [ "$fails" = 0 ]; then echo "selftest: all plugin-gate checks passed"
   else echo "selftest: $fails check(s) FAILED" >&2; exit 1; fi
@@ -231,6 +261,13 @@ PY
       *[![:space:]]*) : ;;
       *) echo "plugin: INVALID required skill $name (skills/$name/SKILL.md: the first 'description: ' line the OpenCode generator reads is empty — it must carry a value)" >&2; exit 1 ;;
     esac
+    # The ELI5 style block must reach the far side of the frontmatter stripper. Checked
+    # by RUNNING the generator's own awk transform rather than by grepping the file or
+    # counting lines: a block sitting in frontmatter is present in the file and absent
+    # from every OpenCode command generated from it, and only the transform can tell
+    # those apart. Same validator/consumer discipline as opencode_description above.
+    awk 'c==2{print} /^---$/{c++; next}' "$f" | grep -q -- '<!-- xcheck:style:begin -->' || {
+      echo "plugin: INVALID required skill $name (skills/$name/SKILL.md: the xcheck style block does not survive the frontmatter stripper — it is missing, or it sits above the second '---' where the OpenCode generator drops it; run 'python3 ci/render-style.py')" >&2; exit 1; }
   done
   count=0
   for skill in "$root"/skills/*/SKILL.md; do
@@ -238,5 +275,5 @@ PY
     count=$((count + 1))
   done
   [ "$count" = 6 ] || { echo "plugin: expected exactly 6 skills in $root/skills/, found $count" >&2; exit 1; }
-  echo "plugin: manifests carry name/version/description (skills path checked where declared) + six launcher skills have a name: frontmatter line, a non-empty body, and a description the OpenCode generator reads as non-empty"
+  echo "plugin: manifests carry name/version/description (skills path checked where declared) + six launcher skills have a name: frontmatter line, a non-empty body, a description the OpenCode generator reads as non-empty, and a style block that survives the frontmatter stripper"
 fi

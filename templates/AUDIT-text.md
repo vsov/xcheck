@@ -34,7 +34,16 @@
      across units, not any single one — get dedicated passes over unit
      PAIRS/TRIPLES: pick pairs that share subject matter. One checkbox
      per pass: -->
-- [ ] P-01 — <dimension> × <units>: <charter one-liner, stop conditions>
+- [ ] P-01 — <dimension> × <units>: <charter one-liner>; stop: <stop conditions>
+<!-- This queue is the PLAN a human reads and rules on. It becomes machine state
+     once, when the operator runs `xcheck migrate` after this file is finished:
+     from then on the queue lives in audit/state.json, `xcheck next` dispatches
+     from there, and a further pass is appended with
+     `xcheck queue-pass P-NN --dimension <key> --units U01,U02 --charter "..." --stop "..."`
+     rather than by adding a line here. Every entry must carry the FULL form above
+     — id, dimension, units, charter AND `; stop:` — because a line the converter
+     cannot read is refused, not skipped: a dropped pass is a queue that reports
+     itself finished. -->
 
 ## 5. Limits
 <!-- Copy XCHECK.md §10 defaults; override per project if needed. -->

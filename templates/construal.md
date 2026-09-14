@@ -1,20 +1,16 @@
----
-key: 0000000000000000 # 16 lowercase hex — construal_key(role, charter); the filename is <key>.md
-role: Auditor # the canonical role receiving the charter (Planner | Auditor | Triage | Remediator | Verifier)
-charter: # the charter text AS ISSUED, verbatim — the key is derived from role + this text
-session: 0000000000000000 # the PRODUCING session's id (16 lowercase hex), i.e. whoever wrote this file
-created: YYYY-MM-DD
-status: proposed # proposed | admitted | refused
-admitted-by: null # the ADMITTING session id, or `envelope:<name>` — never equal to `session` (§4 rule 9)
-admitted-at: null # YYYY-MM-DD, set when admitted
-envelope: null # which §10 `construal_envelope` covered this, if any
----
+<!-- The construal ARGUMENT: five sections and nothing above them. The record —
+     key, role, charter, producing session, status, admitted-by — lives in
+     audit/state.json and is written by `xcheck propose-construal <key> --role <Role>
+     --charter "<charter, verbatim>" --session $XCHECK_SESSION_ID --body
+     construals/<key>.md`. The key is derived from role + charter, so the verb checks
+     it rather than trusting a typed one. You never admit your own construal:
+     `xcheck admit-construal` refuses the producing session by name (§4 rule 9). -->
 
 <!-- XCHECK.md §4 rule 9. Write this BEFORE any effect on the material, then stop.
      The construal is admitted as EVIDENCE, never as authority: it is what the
-     admitter inspects, not what authorizes the work. Never set `status: admitted`
-     yourself — a producer that admits its own construal has licensed its own
-     misreading, and lint refuses it. All five sections below are required and must
+     admitter inspects, not what authorizes the work. A producer that admits its own
+     construal has licensed its own misreading, which is why the admission is a
+     separate act by a different party. All five sections below are required and must
      carry real content; an empty one is a silent gap, not a short answer. -->
 
 ## Task frame
@@ -31,9 +27,12 @@ envelope: null # which §10 `construal_envelope` covered this, if any
      these is a place the work can go wrong silently. -->
 
 ## Stop conditions
-<!-- What ends this session: the charter's own stop conditions, plus any you are
-     adding (context budget, a cap, a blocking dependency). -->
+<!-- What ends the CHARTERED work — the charter's own stop conditions, plus any the
+     executing session adds (context budget, a cap, a blocking dependency). Not the
+     stop of THIS writing session: that is fixed by the gate — write, then stop. -->
 
 ## Out of scope
-<!-- What you are deliberately NOT doing, including things a reader might assume
-     are included. The residue half: state it even when it feels obvious. -->
+<!-- What the CHARTERED work deliberately does NOT do, including things a reader
+     might assume are included. The residue half: state it even when it feels
+     obvious. All five sections construe the chartered work, not this writing
+     session (F-0145). -->

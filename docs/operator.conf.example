@@ -1,0 +1,152 @@
+# xcheck OPERATOR PROFILE (KEY=VALUE, # comments). {prompt} = role prompt.
+#
+# This file lives OUTSIDE any audited repository, and it is the only place the
+# orchestrator reads executable policy from: what each role runs, the containment it
+# runs inside, the environment and network it reaches, its limits, and whether commits
+# are pushed. `audit/orchestrator.conf` inside a subject may carry none of these — a
+# session can edit that file and the courier would ship the edit into the next dispatch.
+#
+# --- role commands. There is no default: an unset role cannot be dispatched, which is
+# the correct answer for a machine whose operator has not said what to run.
+planner_cmd=codex exec --sandbox workspace-write {prompt}
+auditor_cmd=codex exec --sandbox workspace-write {prompt}
+verifier_cmd=codex exec --sandbox workspace-write {prompt}
+# A permission-skipping flag (`--dangerously-skip-permissions` and its equivalents) is
+# NOT shipped here. It hands the child every capability its containment still allows, so
+# it is a decision about the machine and belongs beside a machine boundary: add it only
+# under sandbox_profile=container. Under `none` it is refused outright.
+remediator_cmd=claude -p {prompt}
+# telemetry_adapter: which provider's usage shape the wrapper above hands back —
+# `codex` or `fake`. There is NO DEFAULT and none is guessed from the role command: a
+# command named `codex` may be a wrapper, a proxy or a shim, and inferring a provider from
+# a program name is deciding something the operator did not say. Unset means sessions
+# record no provider figure, which is the honest answer for an unconfigured machine.
+# `fake` speaks the canonical field names and exists so the interface can be exercised on
+# a machine with no provider CLI installed.
+telemetry_adapter=
+# cheap_model / strong_model: the two routes `model_routing` resolves to. Both unset by
+# default, and a route with no model REFUSES the dispatch rather than running one nobody
+# chose — routing that records a label and runs the same model is worse than no routing,
+# because the label gets quoted in metrics as a fact. Put `{model}` in the role command
+# where your CLI takes its model (for example `--model {model}`).
+cheap_model=
+strong_model=
+# push_after_commit: empty/off = never push (default); on/true/1/yes = git push after
+# each courier commit.
+push_after_commit=
+# --- containment. Every key here has a SAFE default when absent, EXCEPT the first.
+# trust_level: trusted | untrusted. NO DEFAULT, and a writing role refuses to dispatch
+# until it is set — how much containment a repository needs is a question about that
+# repository, and the cheap answer is the expensive one to get wrong. `trusted` = code
+# you or your organisation wrote and review, and process-level isolation is accepted
+# deliberately. `untrusted` = anything else, and it makes sandbox_profile=container
+# MANDATORY: the worktree profiles isolate the repository, not the machine.
+trust_level=
+# sandbox_profile: worktree (default for writing roles) | readonly (Auditor and
+# Verifier, which must not change the material) | container (an OS boundary — required
+# under trust_level=untrusted, see the block below) | none (explicit opt-out — the child
+# runs in the project itself). An unknown name is REFUSED, never guessed. Leave empty
+# for the per-role default, which is a worktree and NOT a machine boundary: the operator
+# home directory is readable from it, the host network is reachable, and the original
+# checkout is writable around the courier. A permission-skipping agent flag is permitted
+# only under an isolating profile (worktree/readonly/container) and refused under `none`.
+sandbox_profile=
+# env_allowlist: extra environment names (comma-separated) the child may inherit ON TOP
+# of PATH/HOME/LANG/TERM/TMPDIR/… and XCHECK_*. Everything else is dropped, so cloud
+# credentials and signing keys are not inheritable by accident.
+env_allowlist=
+# session_timeout: hard wall-clock bound per session, seconds (default 3600). On expiry
+# the child's whole PROCESS GROUP is terminated, so a grandchild dies with it.
+session_timeout=3600
+# The four deadlines the hard bound above cannot express — it answers "how long may a
+# session run", and a session that never STARTS is a different failure. Seconds; 0 = off.
+# Derived from the W-06 run, whose ninth session wrote 1,764 bytes (the CLI banner and the
+# prompt echoed back) and then held a slot for the full 3600s, while the eight that worked
+# ran 439.3s-1052.7s and wrote 527KB-1.1MB.
+# startup_deadline: no output AT ALL after N seconds.
+startup_deadline=120
+# output_deadline: no output beyond the banner allowance plus this session's own prompt
+# echoed back, and no canonical transition, after N seconds. It measures BYTES — it is a
+# hang detector, not a judgement about content, and it is named for what it counts.
+# Longer than the entire life of the fastest working session in that run.
+output_deadline=600
+# activity_deadline: no OBSERVABLE ACTIVITY after N seconds. Activity is evidence the
+# child cannot manufacture by printing: a write inside its own worktree, a canonical
+# state transition, or a validated telemetry sidecar. A child that pads its log past the
+# output allowance clears the deadline above and is killed by this one.
+activity_deadline=1200
+# idle_deadline: silent for N seconds. Longer than the whole duration of every session in
+# that run, the longest included.
+idle_deadline=1200
+# log_dir: where RAW session logs are written. Empty = resolved as $XCHECK_LOG_DIR, then
+# $XDG_STATE_HOME/xcheck/logs/<project>, then the system temp directory — always OUTSIDE
+# the audited working tree. `audit/logs-manifest.jsonl` keeps the name, size and sha256 of
+# every log in the repository; the bytes do not live there.
+log_dir=
+# log_retention_days: how long `xcheck prune-logs` considers a log worth keeping.
+# Pruning is NEVER automatic: it is an explicit verb, and it reports unless given --apply.
+log_retention_days=30
+# kill_grace: seconds between SIGTERM and SIGKILL when a session is terminated.
+kill_grace=10
+# cpu_seconds / address_space_mb: per-child RLIMIT_CPU / RLIMIT_AS (POSIX only).
+# 0 = unset. If set on a platform without `resource`, the runner REFUSES rather than
+# pretending the limit applied.
+cpu_seconds=0
+address_space_mb=0
+# lease_ttl: seconds after which a lock whose heartbeat has stopped is a DEAD LEASE,
+# reclaimable by plain `xcheck unlock` (no --force). A live heartbeat is never
+# reclaimable. The orchestrator beats while a session runs.
+lease_ttl=300
+# --- the `container` profile. OPT-IN — set sandbox_profile=container. The worktree
+# profiles isolate the REPOSITORY; this one asks the operating system to isolate the
+# MACHINE: no network, an empty synthetic HOME, the source checkout mounted read-only,
+# and bounded CPU/memory/PIDs. It needs a working docker and REFUSES without one — it
+# never degrades to a weaker profile.
+# container_image: what the session runs in. PINNED BY DIGEST, and enforced rather than
+# recommended: an image without an `@sha256:<64 hex>` digest is refused at the door. A
+# mutable tag means the image that held the recorded escape matrix is not necessarily
+# the image that runs tomorrow. The shipped default has sh, git and busybox — enough for
+# the escape probes and a read-only session, but NOT python3 and NOT any agent CLI.
+container_image=alpine/git@sha256:3b44767883ac77bddae0160cc27b6b039345e23fa3504f4159efaa32264ab57f
+# unsafe_allow_unpinned_image: the escape hatch, named for what it costs. `on` permits
+# an unpinned image and WRITES THE WAIVER INTO THE RUN'S LOG. It is about PINNING ONLY:
+# it does not widen the network, the mounts, the dropped capabilities or any role's
+# read-only default. One knob, one meaning.
+unsafe_allow_unpinned_image=off
+# --- the egress broker. OPT-IN, and only under `container`.
+# egress_allowlist: hostnames or IPs, comma-separated, that the session may reach. EMPTY
+# (the default) means the container keeps `--network=none`. When set, the audit
+# container joins an INTERNAL docker network with no route off it, and a broker sidecar
+# permits exactly these hosts by HTTP CONNECT and logs host+verdict for every attempt.
+# It fails closed. What it does NOT do: it does not stop prompt injection, it does not
+# shorten credential lifetimes, and it is not a package-registry proxy.
+egress_allowlist=
+# egress_uplink: the docker network the broker's second leg attaches to.
+egress_uplink=bridge
+# egress_broker_image: what the sidecar runs. Pinned for the same reason the audit
+# container is: the broker is the thing deciding what leaves this run.
+egress_broker_image=alpine/git@sha256:3b44767883ac77bddae0160cc27b6b039345e23fa3504f4159efaa32264ab57f
+# container_cpus / container_memory_mb / container_pids: the bounds docker enforces on
+# the child. All three must be non-zero — unlimited under a profile whose claim is a
+# bound is refused rather than applied. When address_space_mb is set it wins over
+# container_memory_mb, so there is one memory knob, not two.
+container_cpus=2
+container_memory_mb=2048
+container_pids=256
+# --- concurrency, retry, and how much may run at all.
+# max_sessions: the default cap on `xcheck loop` when --max-sessions is not given.
+max_sessions=20
+# parallel_passes: off by default, and `on` is CONDITIONAL — at the moment of the
+# decision the orchestrator runs a transactional apply against a throwaway project and
+# reads the bytes back; if that probe fails, `on` is refused with the reason.
+parallel_passes=off
+parallel_workers=2
+max_sessions_per_run=8
+parallel_budget_minutes=480
+parallel_confirm_above=4
+# retry_limit: how many times a session may be re-dispatched after a TRANSIENT failure
+# (provider-error, or a timeout the log shows was the transport's and not the session's
+# own wall-clock budget). 0 = never retry, and 0 is the default: a failed session's
+# changes could still be applied, so a retry could apply the same material effect twice.
+# A refusal, a capability violation and a crash are never retried at any setting.
+retry_limit=0

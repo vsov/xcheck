@@ -1,28 +1,89 @@
 ---
 name: xcheck-triage
-description: Run xcheck triage as a dialogue - present reported findings and record the human's accept/reject/defer decisions in the ledger. Use when the user invokes $xcheck-triage or /xcheck-triage, or says "triage" or "let's go through the findings". The agent is the pen; the human is the decider.
+description: Bring the person to the xcheck triage gate and hand them the exact commands for the decisions they make - the wrapper presents, the human decides and records. Use when the user invokes $xcheck-triage or /xcheck-triage, says "triage the findings", or wants reported findings accepted, rejected or deferred.
 ---
 
-# xcheck launcher — Triage (dialogue mode)
+# xcheck launcher — Triage (wrapper)
 
-You are the **pen, not the decider** (XCHECK.md §3 Triage, Agent-as-pen rule). The human makes every decision; you present, record, and never fill gaps with your own judgment.
+**Launch mode: `orchestrated`.** This launcher is a WRAPPER. It does not run the role inside your agent; it hands the work to `xcheck next`, which dispatches the role through `runner.py` with all eight controls in force: a sandbox profile, a hard timeout, an environment allowlist, log redaction, a process-group kill, the courier review of the diff, an invocation envelope recording what was in force at dispatch, and a session receipt attesting what the session actually did. What this skill contributes is preflight and routing — it checks the project is ready, says which role the orchestrator will dispatch and why, hands off, and reports what came back. It is not a session: it holds no writing lock, writes no finding, and has no charter of its own. The cost is the conversation. The role now runs as a child process you do not talk to, and its reasoning reaches you as recorded output instead of as a dialogue; xcheck no longer ships a launcher that trades the eight controls for that dialogue.
 
-1. **Preflight.** `audit/XCHECK.md` and `audit/LEDGER.md` must exist. Missing → stop, point to xcheck `bootstrap.md`.
-2. Read `audit/XCHECK.md` fully (§4 rules 1/3 — every session reads it before acting; esp. §2–§3 for the triage write surface & agent-as-pen, and §5 for the lifecycle transitions you apply in step 3) and `audit/AUDIT.md`, then `audit/LEDGER.md`.
-3. **Collect:** all `reported` rows — this is the triage queue, and the ONLY group triage transitions. Also note, for optional review (NOT triage rows): `⚠ needs-human` rows, the `deferred` backlog, unresolved `disputed` rows.
-   **Legal transitions by source status (§5) — never cross groups:** a `reported` row → `accepted`/`rejected`/`deferred` only. That triad is the ENTIRE triage write vocabulary — `XCHECK.md` §3 (Triage, Forbidden) bars this session from setting any other status, `withdrawn` included. A `disputed` row is NOT resolved here: its resolution to `accepted`/`withdrawn` is decided by the human and recorded agent-as-pen by the Auditor in a dispute round (§5; §9 rule 3), so route it to an Auditor dispute-round session (`xcheck-audit disputed`) — that session runs the one objection round AND records the human's `accepted`/`withdrawn` ruling; triage writes nothing for it now. `deferred` rows and findings stopped at `reopen_limit` also have NO triage transition — route them per §9, never assign a new status here. A batch statement ("all critical accepted") applies only to `reported` rows in that group, never to a `disputed`/`deferred`/`reopened` one.
-4. **Present** compactly in the human's language, grouped by severity then dimension: id, title, unit, and a one-line gist of the evidence (open finding files to quote — reading is allowed; you WRITE only the ledger). CF rows get their own presentation: pattern, census size, strategy rung, member ids.
-5. **Collect decisions conversationally.** Batch statements apply exactly as stated ("all critical accepted" = accepted for those rows and nothing else). Ambiguous statement → ask; unstated → row stays `reported`. You may give an opinion when asked, clearly labeled as opinion; the recorded status is only what the human states.
-6. **Write** to `audit/LEDGER.md` only, and only the **status** column of affected `reported` rows, and only the values `accepted`/`rejected`/`deferred` (§3 Triage write surface: status column only, and no status outside that triad — never `withdrawn`). A rejected CF also reverts every finding in its `members:` list to `accepted` (the one non-`reported` write triage owns, §8 rule 4). Do NOT write the `next` column or any other column — the `next` index is derived later by agent/orchestrator sessions, not by triage. Never touch finding files: frontmatter is synced later per §2 rule 3 — a Remediator applies `accepted` (and a rejected-CF member reversion) on contact, and the orchestrator's writing `xcheck next` transaction applies the terminal `rejected`/`deferred` decisions that no cycle role picks up, so no triage decision is left indefinitely unsynced (F-0100).
-7. **Close** with a written summary: rows changed (id → status), rows left undecided, and the suggested next launcher (e.g. `xcheck-remediate` when findings were accepted).
-8. **Session hygiene (F-0120):** you are a writing session (§3 Triage writes the LEDGER status column), so the same discipline binds you as every other writing role. Create every temporary artifact (scratch copies, notes, fixtures, marker files) OUTSIDE the project tree — in a system temp dir — never inside the project. The orchestrator's courier ships the project tree, so a stray in-tree file is committed as material; clean up before you exit. `bin/xcheck`'s courier now also refuses to silently commit a new untracked top-level path outside `audit/`, naming it instead — but keep scratch out of the tree in the first place.
+<!-- xcheck:style:begin -->
+## How to talk to the person running this audit
 
-## Lock discipline
+Everything in this section is about wording, and only about wording. It applies to every
+reply a human will read in this session.
 
-`audit/.lock` serializes writing sessions (§4 rule 8) and is shared with the orchestrator (`bin/xcheck`). It is a DIRECTORY, acquired atomically with `mkdir` — the second writer's `mkdir` fails with EEXIST, so the create IS the acquisition. Match that — never check-then-create (the gap between an existence check and a separate create lets two sessions both win).
+**Compression is off.** If `caveman` is running, or any other output-compression mode is
+running, it does not apply here. A mode like that stays switched on until it hears the
+exact phrase that releases it, so here is the phrase: **normal mode**. Write ordinary
+prose — whole sentences, articles left in, nothing telegraphic. This holds for every reply
+in the session, not only the first one.
 
-0. **Orchestrated child — skip acquisition (F-0093):** the orchestrator (`bin/xcheck`) signals inherited lock ownership through TWO channels, because process env does not reach a sandboxed command runner on every agent platform (a Codex-style runner runs your shell where `env` shows nothing of the launched CLI's variables): `XCHECK_LOCK_INHERITED=<nonce>` in your environment AND an `Orchestration context` line appended to your role-prompt carrying the same `XCHECK_LOCK_INHERITED=<nonce>`. Read the nonce from whichever channel you can see — the prompt line always reaches you. If that nonce is present AND equals the `nonce` in `audit/.lock/owner`, the orchestrator launched you and is already holding the writing lock around this whole transaction — do NOT `mkdir audit/.lock` (it would fail EEXIST on your own parent's lock and abort you), do NOT write an owner record, and do NOT remove the lock on exit; the orchestrator owns its release. If the nonce is present but does not match the on-disk owner (or the owner record is missing), treat it as a foreign lock — stop and report the conflict to the human. If neither channel carries a nonce you are a standalone session — acquire atomically as in step 1 below.
+**ELI5 is on.** Your reader is intelligent and brand new to this vocabulary. Take the
+trouble to be understood:
 
-1. **Acquire atomically:** create the lock DIRECTORY in one step that FAILS if it already exists — `mkdir audit/.lock` — then write the owner record inside it, including a fresh per-session `nonce` — a unique random token you generate at acquire time (16 hex chars from a random source, matching `bin/xcheck`, which writes `os.urandom(8).hex()`): `printf '%s' '{"pid": <pid or 0>, "role": "<Role>", "started": "<ISO>", "host": "<host>", "nonce": "<nonce>"}' > audit/.lock/owner`. `mkdir` is the atomic gate (a second `mkdir` on an existing directory fails); the `nonce` — NOT the `pid`+`started` pair, which is not a unique owner id (two agent-CLI sessions both record `pid: 0` and can share the same ISO second, giving a byte-identical record) — is what identifies you for release. For `pid`, record a process id ONLY if it stays alive for your whole session (e.g. the orchestrator's own pid); a transient shell `$$` dies the instant the acquire command returns — while your session keeps running — which would make your own live lock look stale and let another session steal it, so never record `$$`. An agent-CLI session has no session-long pid: record `pid: 0` (the `nonce`, not the pid, is your identity; the pid only drives liveness). `bin/xcheck` reads `pid: 0` as a live manual session (`os.kill(0, 0)` never reports it dead), so the lock stands until your owner-checked release removes it, or — if the session died — a human clears it with `xcheck unlock --force`. If `mkdir` fails, another writing session holds the lock — do not start; report the conflict to the human.
-2. **Owner-checked release:** hold the lock for the whole session; before removing, re-read `audit/.lock/owner` and confirm its `nonce` still matches the one you wrote at acquire — check the `nonce`, never the `pid`+`started` pair (a `pid: 0` manual session can collide on it), exactly as `bin/xcheck`'s `release()` does — only then `rm audit/.lock/owner && rmdir audit/.lock`, on every exit path including early stop. Removing your own record first and then `rmdir` means a foreign owner's record keeps the directory non-empty, so `rmdir` can never remove a lock you do not own. Never delete a lock you do not own.
-3. **Stale lock:** a lock carrying a real, dead `pid` is stale, but non-force `xcheck unlock` no longer removes it — clearing a lock by pathname cannot be made race-free against a concurrent clear + re-acquire (F-0095), so plain `xcheck unlock` only diagnoses staleness and never deletes. Clear any stale lock — a dead-pid lock, a `pid: 0` manual-session lock (which never reads as pid-dead), or a pre-directory `.lock` FILE (legacy, not auto-migrated) — with `xcheck unlock --force`, and only after the human confirms no writing session is active (§4 rule 8). Never silently steal a lock you do not own.
+- The first time a term of art appears, say what it means in one short clause, then use it
+  freely afterwards.
+- Short sentences, one idea in each.
+- Say what the person should do next, and where they should do it.
+- Reply in whatever language the person wrote to you in.
+- A concrete example beats an abstract rule.
+- When something has gone wrong, say plainly what happened and what it means for them.
+
+**Four things are reproduced exactly, and never reworded.** Explaining what one of them
+means is welcome. Replacing one with your own phrasing is not, because an audit trail is
+worth exactly what its wording is worth:
+
+1. **Quoted evidence** — any line lifted out of a file or a transcript, together with the
+   path and line number it came from.
+2. **Finding ids** — `F-0042`, `CF-0003`, `RP-0007`, and every id shaped like them.
+3. **§5 statuses** — the words §5 uses for where a finding stands, spelled the way §5
+   spells them.
+4. **Copy-paste commands** — anything the person is meant to run, character for character
+   as it must be typed.
+
+Plain wording is the goal everywhere else. These four are the exception, and they are the
+exception because someone will later have to check them against the ledger.
+<!-- xcheck:style:end -->
+
+Triage is the one gate the orchestrator does not dispatch. A triage decision is a
+human-owned transition (§5), and `write.authorize_dispatch_write` allows it only when no
+session is open — so there is no contained session to hand this to, and this wrapper does
+not try to invent one. It brings you to the gate and gets out of the way.
+
+0. **Are you already the session?** If your own prompt carries an `Orchestration context` line, the orchestrator dispatched you and you ARE the session this launcher would have started. This launcher does not apply to you: follow your role card in `audit/XCHECK.md`, and ignore every step below — running them would ask the orchestrator to dispatch a session inside a session, and the writing lock your own parent holds would refuse it.
+1. **Preflight.** `audit/XCHECK.md` and `audit/state.json` must exist in the current
+   project. Missing → stop and point the person at the xcheck repository's `bootstrap.md`
+   / `install.sh`. Read `audit/XCHECK.md` §2, §3 (the Triage role card) and §5 (the
+   lifecycle) before presenting anything: what you may present and what the human may
+   decide are both defined there.
+2. **Reach the gate.** Run `xcheck status`. If the decision is not `stop-triage` the
+   orchestrator has other work queued first — say what it is, name the launcher that fits
+   it, and stop. `xcheck next` prints the same gate and dispatches nothing while it
+   stands.
+3. **Present the batch, compactly, in the person's language.** Group by severity, then
+   dimension: id, title, unit, and a one-line gist of the evidence, opening the finding
+   bodies to quote them. Reading is the whole job here. Class findings get their own
+   presentation: pattern, census size, strategy rung, member ids.
+4. **Let the person decide, one row at a time or in batches they state.** A batch
+   statement applies exactly as stated and to nothing else. An ambiguous statement is a
+   question, not an inference. An unstated row stays `reported`. You may give an opinion
+   when you are asked for one, labelled as an opinion.
+   The human makes every decision; you present, record, and never fill gaps with your own judgment.
+5. **Hand over the commands — you do not run them.** For each decision the person states,
+   give the exact line to run: `xcheck set-status <ID> accepted|rejected|deferred`, one
+   per finding, character for character. Those three are the entire triage vocabulary; the
+   verb refuses anything §5 does not allow from a row's current status, so a mistyped
+   transition stops instead of landing.
+   Never touch finding files: their frontmatter is a generated mirror of `audit/state.json`, and `xcheck set-status` is the only thing that moves a status. A rejected class finding also reverts every member
+   in its `members:` list to `accepted` — one line per member.
+6. **Close** with a written summary: which rows the person decided and what they decided,
+   which rows they left undecided, and the next decision (`xcheck status`).
+
+## What this wrapper cannot do
+
+It writes nothing at all — not the statuses it just helped decide. Triage moves findings
+between states that only a human may move them between, so the commands go to the person,
+who runs them at their own terminal where there is no open dispatch to authorize. That is
+not friction for its own sake: an agent that could record triage decisions is an agent
+that could record decisions nobody made.

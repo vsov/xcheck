@@ -1,0 +1,135 @@
+name: ci
+
+# Every job runs exactly `bash ci/run-checks.sh` and nothing else. That is the whole
+# design: a CI-only step is a check no developer can reproduce, and the first time it
+# fails it costs an afternoon of push-and-wait. If it belongs in CI it belongs in the
+# script, and if it is in the script it runs locally too.
+#
+# PHASE 17 (fourth audit): the tiers are now used. This workflow used to run the FULL
+# suite in all six matrix cells on every event — about 43 minutes of aggregate compute
+# to answer a pull request, while the fast tier built for exactly that job changed
+# nothing. Four EVENT-SCOPED jobs replace it, and the tier each one asks for is declared
+# in `ci/tiers.py::EVENTS`, not here: `tests/test_check_tiers.py` asserts the two agree
+# in both directions, so a tier no event runs and an event asking for a tier that does
+# not exist are both build failures rather than dead configuration.
+#
+#   pull_request              --tier=pr        one cell   the fast battery
+#   push to main              --tier=release   one cell   the full suite
+#   push of a tag             --tier=package   one cell   the artifact gate
+#   schedule / dispatch       --tier=nightly   MATRIX     the full suite, OS x Python
+#
+# Coverage does not drop: every module the old workflow ran still runs on main and again
+# nightly, and the matrix — the two variables a laptop cannot vary — is what the nightly
+# job exists for.
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    # Weekly, Mondays 04:17 UTC. A tool that shells out to git and spawns agent CLIs
+    # can be broken by things this repository never touches — a new Python point
+    # release, a changed git default. A scheduled run is how that arrives as a red
+    # build instead of as a bug report from whoever upgraded first.
+    - cron: "17 4 * * 1"
+
+jobs:
+  pull-request:
+    name: pull request · pr tier
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0        # ci/check-split.py diffs against the pre-split ref
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install the CI toolchain
+        # Everything `ci/run-checks.sh` needs and cannot provide for itself. This list
+        # is NOT hand-maintained: `ci/preflight.py` derives the names from what the
+        # check scripts import and invoke, `pyproject.toml`'s `ci` extra holds the
+        # pins, and `tests/test_ci_contract.py` fails if this line disagrees with
+        # either. Pinned so a new release of a tool cannot redden every cell at once for
+        # reasons that have nothing to do with a change here.
+        run: pip install "build==1.5.0" "ruff==0.6.9"
+      - name: git identity for the tests that build real repositories
+        run: |
+          git config --global user.email "ci@example.invalid"
+          git config --global user.name "xcheck ci"
+          git config --global init.defaultBranch main
+      - name: Run the same checks a developer runs locally
+        run: bash ci/run-checks.sh --tier=pr
+
+  main:
+    name: main · full suite
+    if: github.event_name == 'push' && !startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install the CI toolchain
+        run: pip install "build==1.5.0" "ruff==0.6.9"
+      - name: git identity for the tests that build real repositories
+        run: |
+          git config --global user.email "ci@example.invalid"
+          git config --global user.name "xcheck ci"
+          git config --global init.defaultBranch main
+      - name: Run the same checks a developer runs locally
+        run: bash ci/run-checks.sh --tier=release
+
+  package:
+    name: tag · package gate
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install the CI toolchain
+        run: pip install "build==1.5.0" "ruff==0.6.9"
+      - name: git identity for the tests that build real repositories
+        run: |
+          git config --global user.email "ci@example.invalid"
+          git config --global user.name "xcheck ci"
+          git config --global init.defaultBranch main
+      - name: Run the same checks a developer runs locally
+        # The artifact is BUILT, INSTALLED and RUN here. It is never uploaded anywhere:
+        # nothing in this workflow publishes, and `tests/test_ci_contract.py` parses the
+        # steps to keep it that way.
+        run: bash ci/run-checks.sh --tier=package
+
+  nightly:
+    name: ${{ matrix.os }} · python ${{ matrix.python }}
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false          # one red cell must not hide the state of the other five
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        python: ["3.10", "3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install the CI toolchain
+        run: pip install "build==1.5.0" "ruff==0.6.9"
+      - name: git identity for the tests that build real repositories
+        run: |
+          git config --global user.email "ci@example.invalid"
+          git config --global user.name "xcheck ci"
+          git config --global init.defaultBranch main
+      - name: Run the same checks a developer runs locally
+        run: bash ci/run-checks.sh --tier=nightly

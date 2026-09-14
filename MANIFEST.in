@@ -1,0 +1,29 @@
+# What the sdist carries, stated rather than inherited.
+#
+# setuptools' default sdist quietly swept `tests/test_*.py` in — but not `harness.py`,
+# not `mutation_report.py`, and not `tests/adversarial/`. The result was 25 test modules
+# that cannot import their own helpers: a test tree that looks shipped and cannot run is
+# worse than one that is absent, because someone will try it and conclude the tool is
+# broken. `ci/check-artifact-contents.py` is what caught it.
+#
+# So the suite is pruned. It lives in the repository, runs from there, and is not part
+# of what a `pip install` is for. The artifact's own self-check is `xcheck selftest`,
+# which is embedded in the package and does ship.
+prune tests
+prune ci
+prune docs
+prune skills
+prune launchers
+prune templates
+prune .github
+prune .claude-plugin
+prune .codex-plugin
+
+# The four documents an installed copy genuinely needs. Each is on the allowlist in
+# `ci/check-artifact-contents.py` with the reason it is there; that file and this one
+# have to agree, and the gate is what notices when they do not.
+include README.md
+include LICENSE
+include CHANGELOG.md
+include SECURITY.md
+include XCHECK.md

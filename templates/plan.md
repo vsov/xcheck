@@ -1,10 +1,7 @@
----
-id: RP-XXXX
-findings: [] # accepted F-XXXX and/or CF-XXXX ids in this batch (≤ remediation_batch_size);
-             # an accepted CF is a batch of its own (§8)
-status: open # open | done
-updated: YYYY-MM-DD
----
+<!-- The remediation plan: the human half of a batch. The machine record — id, the
+     findings it covers, its state — lives in audit/state.json and is written by
+     `xcheck record-plan RP-NNNN --findings F-...,F-... --body plans/<this file>`.
+     Do not add a frontmatter block: nothing reads one here. -->
 
 ## Batch validation results
 <!-- Remediator, step 1 per finding: validated / disputed / obsolete.

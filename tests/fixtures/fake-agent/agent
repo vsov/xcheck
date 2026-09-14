@@ -1,0 +1,83 @@
+#!/usr/bin/env python3
+"""A controllable stand-in for an agent CLI, dispatched as a real child process.
+
+The orchestrator's own tests could always assert what `build_cmd` RETURNS. This one
+asserts what a child process RECEIVED, which is a different fact — the fourth audit
+shipped model routing green on the first and broken on the second.
+
+Interface, deliberately one knob: `--spec <path>`. Everything else about a run is read
+from that JSON file, and everything the run did is written to the file it names in
+`record`. Two files, no environment plumbing, no import of xcheck.
+
+    spec = {
+      "record":    "<path>",              # required — where to write the account
+      "telemetry": {...} | null,          # printed as one XCHECK_TELEMETRY <json> line
+      "sidecar":   {...} | null,          # written to the `--usage <path>` argument
+      "patch":     {"path": ..., "text": ...} | null,   # written under $PWD
+      "stdout":    "text",
+      "exit":      0
+    }
+
+    record = {"argv": [...], "cwd": ..., "env": {XCHECK_* only}, "sidecar_arg": ...}
+
+`record` is a JSON LIST appended to, not an object: a scenario that dispatches twice
+(retry, or two roles) must be able to tell the second call from an overwrite of the
+first — an empty list and a lost call look identical otherwise.
+"""
+
+import json
+import os
+import sys
+from pathlib import Path
+
+
+def main(argv):
+    spec_path = None
+    for i, a in enumerate(argv):
+        if a == "--spec" and i + 1 < len(argv):
+            spec_path = argv[i + 1]
+    if spec_path is None:
+        sys.stderr.write("fake-agent: no --spec\n")
+        return 2
+    spec = json.loads(Path(spec_path).read_text(encoding="utf-8"))
+
+    # `--usage <path>` is how an operator's wrapper is told where to put provider usage;
+    # the orchestrator fills it from `{sidecar}`. Recorded whether or not it is written,
+    # because "was handed a path" and "wrote the file" are separate claims.
+    sidecar_arg = None
+    for i, a in enumerate(argv):
+        if a == "--usage" and i + 1 < len(argv):
+            sidecar_arg = argv[i + 1]
+
+    record = Path(spec["record"])
+    entries = []
+    if record.exists():
+        entries = json.loads(record.read_text(encoding="utf-8"))
+    entries.append({"argv": list(sys.argv), "cwd": os.getcwd(), "sidecar_arg": sidecar_arg,
+                    "env": {k: v for k, v in os.environ.items()
+                            if k.startswith("XCHECK_")}})
+    record.write_text(json.dumps(entries, indent=2) + "\n", encoding="utf-8")
+
+    if spec.get("patch"):
+        p = Path(os.getcwd()) / spec["patch"]["path"]
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(spec["patch"]["text"], encoding="utf-8")
+
+    if spec.get("sidecar") is not None and sidecar_arg:
+        # A real wrapper stamps the session it was dispatched for; the orchestrator
+        # refuses a sidecar that names another session, or none. `spec` may override it
+        # — a scenario about a stale or forged sidecar needs to write the wrong one.
+        usage = dict(spec["sidecar"])
+        usage.setdefault("session_id", os.environ.get("XCHECK_SESSION_ID"))
+        Path(sidecar_arg).write_text(json.dumps(usage), encoding="utf-8")
+
+    if spec.get("stdout"):
+        sys.stdout.write(spec["stdout"].rstrip("\n") + "\n")
+    if spec.get("telemetry") is not None:
+        sys.stdout.write("XCHECK_TELEMETRY " + json.dumps(spec["telemetry"]) + "\n")
+    sys.stdout.flush()
+    return int(spec.get("exit", 0))
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

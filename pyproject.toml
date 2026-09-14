@@ -1,0 +1,69 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "xcheck"
+version = "0.9.5"                 # kept equal to xcheck.__version__ by tests/test_version_parity.py
+description = "Cross-agent audit and remediation methodology: plan, audit, triage, remediate and independently verify large code or text projects through a durable findings ledger with human gates."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Viktor Sovietov" }]
+keywords = ["audit", "code-review", "remediation", "cross-agent", "methodology", "orchestration"]
+# The Python classifiers list exactly the versions `.github/workflows/ci.yml` runs and
+# no more. 3.13 was declared here while no job tested it — a promise made by a string.
+# `tests/test_version_parity.py` reads both files and fails on any disagreement.
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Quality Assurance",
+]
+
+# NO runtime dependencies, and this is a constraint rather than an accident (N2).
+# xcheck runs inside other people's projects and must not perturb their environment;
+# a stdlib-only tool installs anywhere Python 3.10 does and can never be the reason a
+# target project's dependency resolution changed.
+dependencies = []
+
+# The CI toolchain, pinned in ONE place. `.github/workflows/ci.yml` installs exactly
+# this list and `ci/preflight.py` derives the NAMES independently from what the check
+# scripts import and invoke; `tests/test_ci_contract.py` fails if the three disagree.
+# It is an OPTIONAL extra, so `pip install xcheck` still pulls nothing (N2) — these are
+# what it takes to CHECK xcheck, never to run it.
+#
+# 0.9.1 phase 6, audit P0 #7: before this, the workflow installed `ruff` and nothing
+# else, while `ci/release-gate.sh` hard-requires `build`. Under Python 3.11 the gate
+# exits 1; under 3.10 it passed only because that interpreter happened to have `build`
+# installed. A workflow that depends on undeclared ambient runner state is not a CI
+# contract, whatever colour the badge is.
+[project.optional-dependencies]
+ci = ["build==1.5.0", "ruff==0.6.9"]
+
+[project.urls]
+Homepage = "https://github.com/vsov/xcheck"
+Repository = "https://github.com/vsov/xcheck"
+Changelog = "https://github.com/vsov/xcheck/blob/main/CHANGELOG.md"
+
+[project.scripts]
+xcheck = "xcheck.cli:main_argv"
+
+[tool.setuptools]
+# `bin/xcheck` keeps working unchanged: installation ADDS a console script, it does
+# not replace the path invocation. The orchestrator, the six skills and every
+# README instruction call the tool by path, and an install that silently moved the
+# entry point would break all of them at once.
+packages = ["xcheck"]
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+# Deliberately narrow, matching ci/run-checks.sh: E9 (syntax) and F (undefined
+# names, unused imports). A wider ruleset today would force a cosmetic sweep across
+# 11k lines and bury the real work in reformatting noise.
+select = ["E9", "F"]
