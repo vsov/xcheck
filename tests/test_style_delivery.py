@@ -92,9 +92,27 @@ class EveryDeliveryPathCarriesTheBlock(unittest.TestCase):
                     [INSTALLER, REPO / "styles" / "eli5.md", REPO / "ci" / "render-style.py"]:
             self.assertIn(str(must), self.project_before,
                           f"the tree snapshot does not cover {must}")
-        self.assertGreaterEqual(len(self.home_before), 6,
-                                "the $HOME snapshot found fewer launcher files than the "
-                                "six this machine has installed — it is watching nothing")
+        # Six, or none, and nothing in between.
+        #
+        # `>= 6` says the tearDown comparison is watching something: this developer's
+        # machine has six launchers installed, and "unchanged" over an empty list is
+        # green for the same reason a working check is — [[spy-needs-a-positive-control]].
+        # On a machine that has never installed them — a CI runner, a fresh clone — the
+        # snapshot is empty because there is nothing to watch, and demanding six was the
+        # first thing the remote gate ever found: five failures, `0 not >= 6`.
+        #
+        # The half that matters holds either way. tearDown compares the SETS, so a file
+        # APPEARING under the real $HOME is caught from an empty baseline exactly as it
+        # is from six — and "the installer must not write to the operator's $HOME" is
+        # the claim worth keeping armed. What an empty baseline cannot say is that an
+        # existing launcher went unmodified, so that is asserted where one exists.
+        # A count between the two is neither: launchers ARE installed and the install is
+        # partial, which makes "unchanged" unreadable rather than true or false.
+        self.assertTrue(not self.home_before or len(self.home_before) >= 6,
+                        f"the $HOME snapshot found {len(self.home_before)} launcher "
+                        f"file(s) — not none, so launchers are installed here, and not "
+                        f"the six a full install leaves. The snapshot is watching a "
+                        f"partial install and cannot say what unchanged means.")
         self.body = source_body()
         self.table = []
 

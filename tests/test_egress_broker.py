@@ -25,6 +25,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -243,16 +244,38 @@ class TheBoundaryHolds(unittest.TestCase):
 
     # -- criterion 4 --------------------------------------------------------------
 
+    def log_lines(self, b, expected, timeout=20):
+        """Read the egress log once it holds `expected` lines, or give up and return
+        what is there.
+
+        The log is written by the SIDECAR, not by the probe that returned.
+        `connect_probe` returns when its throwaway client container exits; the broker
+        appends from its own container on its own schedule, and reading the file the
+        instant the client is gone is a race. This machine won it every time; the first
+        remote run ever observed lost it with ZERO lines — not even the health probe's,
+        which is written during `start()`, long before any of these attempts.
+
+        Waiting cannot turn a wrong line into a right one: the assertions below are
+        untouched, and a log that is genuinely wrong still fails, 20 seconds later.
+        """
+        lines = []
+        deadline = time.time() + timeout
+        while True:
+            text = b.log_path.read_text(encoding="utf-8")
+            lines = [ln for ln in text.strip().splitlines() if ln]
+            if len(lines) >= expected or time.time() >= deadline:
+                return lines
+            time.sleep(0.25)
+
     def test_the_egress_log_matches_the_attempts_made(self):
         b = self.broker(self.provider_ip)
         attempts = [self.provider_ip, "10.255.255.1", self.provider_ip, "evil.invalid"]
         for host in attempts:
             b.connect_probe(host)
-        text = b.log_path.read_text(encoding="utf-8")
+        lines = self.log_lines(b, 1 + len(attempts))
         print("\n  egress log, line for line:")
-        for line in text.strip().splitlines():
+        for line in lines:
             print(f"    | {line}")
-        lines = [ln for ln in text.strip().splitlines() if ln]
         # The health probe is the FIRST line: xcheck's own request is logged like
         # anyone else's, because a log that hides one caller is a summary, not a record.
         self.assertEqual(f"host={egress.PROBE_HOST} port=443 verdict=DENY", lines[0])
