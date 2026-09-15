@@ -263,9 +263,51 @@ class TheBoundaryHolds(unittest.TestCase):
         while True:
             text = b.log_path.read_text(encoding="utf-8")
             lines = [ln for ln in text.strip().splitlines() if ln]
-            if len(lines) >= expected or time.time() >= deadline:
+            if len(lines) >= expected:
+                return lines
+            if time.time() >= deadline:
+                self.print_log_diagnosis(b, lines, expected)
                 return lines
             time.sleep(0.25)
+
+    def print_log_diagnosis(self, b, lines, expected):
+        """Why the log is short, asked of the sidecar itself rather than guessed.
+
+        The waiting version of this read was written for a race and the race was not
+        the cause: the first remote run saw zero lines, the wait was added, and the
+        second saw zero again. Everything else about the broker matched this machine —
+        same pinned image, the health probe answered 403 (`start()` refuses to return
+        otherwise), and the deny probes returned the same `rc=1 ''` here and there.
+        The only thing that differs is whether `>> /log/egress.log` reached the host.
+
+        So the questions are asked where the answer is: who the sidecar runs as, what
+        it sees at the mount point, whether an append from inside succeeds, and what
+        the daemon thinks it mounted. Printed, not asserted — this names a cause for
+        the failure below rather than becoming a second thing that can fail.
+        """
+        print(f"\n  LOG SHORT: {len(lines)} line(s), expected {expected}. "
+              f"Asking the sidecar why.")
+        print(f"    host path : {b.log_path} "
+              f"(exists={b.log_path.exists()}, "
+              f"size={b.log_path.stat().st_size if b.log_path.exists() else '-'})")
+        probes = (
+            ("inside", ["docker", "exec", b.container, "sh", "-c",
+                        'id; echo "--- ls -ln /log"; ls -ln /log; '
+                        'echo "--- append"; '
+                        'if echo probe >> /log/egress.log 2>&1; then echo "append: ok"; '
+                        'else echo "append: FAILED"; fi; '
+                        'echo "--- container now sees"; cat /log/egress.log']),
+            ("mounts", ["docker", "inspect", "-f", "{{json .Mounts}}", b.container]),
+        )
+        for label, cmd in probes:
+            p = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+            out = ((p.stdout or "") + (p.stderr or "")).strip() or "(no output)"
+            print(f"    {label} (rc={p.returncode}):")
+            for ln in out.splitlines():
+                print(f"      {ln}")
+        after = b.log_path.read_text(encoding="utf-8")
+        print(f"    host sees after the inside append: "
+              f"{[x for x in after.strip().splitlines() if x]}")
 
     def test_the_egress_log_matches_the_attempts_made(self):
         b = self.broker(self.provider_ip)
