@@ -446,3 +446,103 @@ class TheTeardownIsClean(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TheRecordIsHalfTheBoundary(unittest.TestCase):
+    """What three runs of this project's own CI found, and what now refuses it.
+
+    The broker enforced every ALLOW and DENY correctly on a host where it could not
+    write its log, and every test of the boundary passed over it. The append failed
+    with EACCES because the sidecar's uid 0 is not this process's user there — a
+    rootless daemon, or one with userns-remap — and `>>` in `sh` reports to a stderr
+    nobody reads and carries on. The result was a boundary that permitted connections
+    it could not account for: enforcement without evidence, which for this project is
+    the worse half to lose.
+
+    Three things changed, and each has an arm here: the log is opened to whoever the
+    sidecar turns out to be, `broker.sh` DENIES when it cannot record, and `start()`
+    refuses a broker whose health probe left no line.
+    """
+
+    def setUp(self):
+        if not DOCKER_OK:
+            _SKIPPED.append(self._testMethodName)
+            self.skipTest(SKIP_REASON)
+        self.tmp = Path(tempfile.mkdtemp(prefix="xcheck-brokersh-"))
+        self.addCleanup(shutil.rmtree, str(self.tmp), ignore_errors=True)
+        (self.tmp / "broker").mkdir()
+        (self.tmp / "log").mkdir()
+        script = self.tmp / "broker" / "broker.sh"
+        script.write_text(egress.BROKER_SH, encoding="utf-8")
+        script.chmod(0o755)
+        (self.tmp / "broker" / "allow").write_text("api.example\n", encoding="utf-8")
+        self.log = self.tmp / "log" / "egress.log"
+        self.log.write_text("", encoding="utf-8")
+
+    def run_broker_sh(self, host, log_mode):
+        """`broker.sh` alone, fed one CONNECT on stdin. No network, no listener — the
+        question is what the script does about its log, and the script is the subject."""
+        p = docker("run", "--rm",
+                   "-v", f"{self.tmp / 'broker'}:/broker:ro",
+                   "-v", f"{self.tmp / 'log'}:/log:{log_mode}",
+                   "--entrypoint", "sh", IMAGE,
+                   "-c", f'printf "CONNECT {host}:443\\r\\n\\r\\n" | /broker/broker.sh')
+        return (p.stdout or "") + (p.stderr or "")
+
+    def test_a_denied_host_is_denied_and_recorded(self):
+        """The control arm. Without it, "denied when it cannot log" is satisfied by a
+        script that denies everything for any reason at all."""
+        out = self.run_broker_sh("evil.invalid", "rw")
+        print("\n  CONTROL  writable log:")
+        print("    reply: " + out.strip().replace("\n", "\n           ")[:120])
+        print(f"    log:   {self.log.read_text(encoding='utf-8').strip()!r}")
+        self.assertIn("403 Forbidden", out)
+        self.assertNotIn("log-unwritable", out)
+        self.assertEqual("host=evil.invalid port=443 verdict=DENY",
+                         self.log.read_text(encoding="utf-8").strip())
+
+    def test_an_allowed_host_is_allowed_and_recorded(self):
+        """The arm that matters: the ALLOW path must record too, or the log accounts
+        for exactly the connections that never happened."""
+        out = self.run_broker_sh("api.example", "rw")
+        print("  CONTROL  writable log, an ALLOWED host:")
+        print(f"    log:   {self.log.read_text(encoding='utf-8').strip()!r}")
+        self.assertIn("200 Connection established", out)
+        self.assertEqual("host=api.example port=443 verdict=ALLOW",
+                         self.log.read_text(encoding="utf-8").strip())
+
+    def test_an_allowed_host_is_DENIED_when_the_log_cannot_be_written(self):
+        """The counterfactual, with the mount read-only so the append really fails.
+
+        `api.example` is on the allowlist: under a writable log the previous test
+        proves it gets a 200. The only thing changed here is whether the verdict can
+        be recorded, and that alone must turn the answer into a refusal."""
+        out = self.run_broker_sh("api.example", "ro")
+        print("  PLANT    read-only log, the same ALLOWED host:")
+        print("    reply: " + out.strip().replace("\n", "\n           ")[:160])
+        self.assertIn("403 Forbidden", out)
+        self.assertIn("log-unwritable", out)
+        self.assertNotIn("200 Connection established", out,
+                         "an allowed host was tunnelled with no record of it")
+
+    def test_a_broker_whose_probe_left_no_line_is_refused_at_launch(self):
+        """`start()`'s check, over a log that answered nothing.
+
+        `_probe()` proves the broker is there and deciding; it does not prove the
+        decision was recorded, and on that host the first held while the second did
+        not. The refusal names the cause, because "empty log" on its own sends the
+        reader looking at the network."""
+        b = egress.Broker(complete_conf(sandbox_profile="container",
+                                        egress_allowlist="api.example"), "deadbeef")
+        b.log_path = self.log
+        with self.assertRaises(egress.EgressError) as caught:
+            b._require_the_probe_was_logged()
+        msg = str(caught.exception)
+        print("  REFUSAL  " + msg[:150])
+        for phrase in ("wrote no line", "rootless docker", "userns-remap"):
+            self.assertIn(phrase, msg, phrase)
+        # And the positive arm, so the guard is not simply always raising.
+        self.log.write_text(f"host={egress.PROBE_HOST} port=443 verdict=DENY\n",
+                            encoding="utf-8")
+        b._require_the_probe_was_logged()
+        print("  CONTROL  the same guard returns once the probe's line is there")

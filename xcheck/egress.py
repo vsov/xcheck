@@ -84,7 +84,15 @@ if [ -n "$host" ]; then
     if [ "$a" = "$host" ]; then verdict=ALLOW; break; fi
   done
 fi
-echo "host=$host port=$port verdict=$verdict" >> /log/egress.log
+# FAIL CLOSED on an unwritable log. The record of what left the run is not a
+# by-product of the decision, it is half of it: a boundary that permits a connection
+# it cannot account for has enforced nothing anybody can check afterwards. Observed
+# for real on a host whose container root is not the host's root — the append failed
+# with EACCES, every verdict stayed correct, and the log stayed empty.
+if ! echo "host=$host port=$port verdict=$verdict" >> /log/egress.log 2>/dev/null; then
+  printf 'HTTP/1.1 403 Forbidden\r\nX-xcheck-egress: log-unwritable %s\r\n\r\n' "$host"
+  exit 0
+fi
 if [ "$verdict" != "ALLOW" ]; then
   printf 'HTTP/1.1 403 Forbidden\r\nX-xcheck-egress: denied %s\r\n\r\n' "$host"
   exit 0
@@ -178,10 +186,20 @@ class Broker:
             "\n".join(self.hosts) + "\n", encoding="utf-8")
         self.log_path = self._tmp / "log" / "egress.log"
         self.log_path.write_text("", encoding="utf-8")
+        # The sidecar writes this file, and WHO it writes as is not ours to assume.
+        # Under rootless docker, or a daemon with userns-remap, the container's uid 0
+        # is an unprivileged host user that owns none of this: the append fails with
+        # EACCES while every ALLOW and DENY stays correct, so the boundary holds and
+        # its record silently does not. Both live inside `mkdtemp`'s 0700 directory,
+        # which nobody else can traverse, so opening them to the sidecar widens
+        # nothing on this machine.
+        (self._tmp / "log").chmod(0o777)
+        self.log_path.chmod(0o666)
         try:
             self._create_network()
             self._start_sidecar()
             self._probe()
+            self._require_the_probe_was_logged()
         except Exception:
             self.stop()
             raise
@@ -241,6 +259,31 @@ class Broker:
             f"answer a CONNECT probe with 403 (got {last[:120]!r}). It is either not "
             f"listening or not the program this run expects, and either way the "
             f"allowlist would be a claim about a thing that is not there.")
+
+    def _require_the_probe_was_logged(self):
+        """The health probe answered; its line must be in the log.
+
+        `_probe()` proves the broker is there and deciding. It does not prove the
+        decision was recorded, and those are two different promises: the first one
+        held on a host where the second did not, for three CI runs, with every test of
+        the boundary passing. A run whose egress cannot be accounted for afterwards is
+        the failure this whole sidecar exists to prevent, so it is refused at launch
+        rather than discovered in an empty log later.
+        """
+        text = ""
+        if self.log_path and self.log_path.exists():
+            text = self.log_path.read_text(encoding="utf-8", errors="replace")
+        if PROBE_HOST in text:
+            return
+        raise EgressError(
+            f"refusing to launch with egress_allowlist set: the broker answered its "
+            f"health probe but wrote no line for it to {self.log_path}. The allowlist "
+            f"is being enforced and nothing is being recorded, which leaves no account "
+            f"of what left this run — and an unaccountable boundary is the thing this "
+            f"sidecar exists to prevent. The usual cause is a host where the "
+            f"container's root is not this user: under rootless docker, or a daemon "
+            f"with userns-remap, the sidecar cannot write a file this process owns. "
+            f"The log holds {len(text.splitlines())} line(s).")
 
     def connect_probe(self, host, port=443, timeout=8):
         """One CONNECT through the broker, from a throwaway container on the internal

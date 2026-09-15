@@ -13,7 +13,7 @@ from the repository, it is not invented here.
 
 ---
 
-## 0.9.5 — unreleased · schema 1
+## 0.9.5 — 2026-09-15 · schema 1
 
 The response to the **sixth** industrial-readiness audit, which read `15cf5f8` and found
 xcheck not yet ready for industrial autonomous operation, with high confidence. Its central
