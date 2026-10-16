@@ -6,9 +6,17 @@ running cycle.
 
 ## 1. Install
 
-Run once, from the xcheck repo root, per audited project. The block below
-copies the text-corpus template by default — swap `AUDIT-text.md` for
-`AUDIT-code.md` in the second `cp` line when auditing a codebase.
+Run once, from the xcheck repo root, per audited project. The one command
+that does it is the installer, which also records provenance for
+`xcheck upgrade` (README §5.2):
+
+```bash
+./install.sh --type code /path/to/project    # or --type text for a text corpus
+```
+
+By hand, the block below copies the text-corpus template — swap
+`AUDIT-text.md` for `AUDIT-code.md` in the second `cp` line when auditing a
+codebase.
 
 ```bash
 # from the xcheck repo root; TARGET = audited project root
@@ -30,7 +38,24 @@ audit state.
 finding's frontmatter block are GENERATED MIRRORS of it (XCHECK.md §2). They
 appear the moment there is state to render.
 
-## 1a. From the Planner's AUDIT.md to state
+## 1a. Operator profile — once per machine
+
+`xcheck next`, and every launcher that wraps it, dispatches nothing until an
+operator profile resolves. That file says which command each role runs and
+inside what boundary. It lives outside every audited repository, so the
+install above does not create it:
+
+```bash
+# from the xcheck repo root
+./operator-profile.sh --trust trusted /path/to/operator.conf    # or --trust untrusted
+export XCHECK_OPERATOR_PROFILE=/path/to/operator.conf
+```
+
+README §5.3 explains the two trust levels and the other ways to name the
+file; README §8 lists every key. The hand-pasted one-liners in §2 below are
+`uncontained-direct` sessions: they never pass through the profile.
+
+## 1b. From the Planner's AUDIT.md to state
 
 `AUDIT.md` is prose a human reads and rules on. Loading it into the canonical
 record is one explicit operator command, run once after the Planner session:
@@ -103,9 +128,9 @@ range, or stop condition and is not a charter; it must not start a session.
 
 ## 3. A typical cycle
 
-1. Install (§1) into the target project.
+1. Install (§1) into the target project, and write the operator profile if this machine has none (§1a).
 2. Planner session produces `AUDIT.md` — norms catalog, dimensions, unit map, pass queue.
-3. Human skims the pass queue and trims it: drop or reorder passes; cheap, no gate, just judgment. Then `xcheck migrate` (§1a) loads it into `audit/state.json` — after this point the queue is amended with `xcheck queue-pass`, not by editing `AUDIT.md`.
+3. Human skims the pass queue and trims it: drop or reorder passes; cheap, no gate, just judgment. Then `xcheck migrate` (§1b) loads it into `audit/state.json` — after this point the queue is amended with `xcheck queue-pass`, not by editing `AUDIT.md`.
 4. Auditor sessions work the queue one charter at a time, filing findings and a pass report per charter.
 5. Triage: human sets every `reported` finding to `accepted`, `rejected`, or `deferred`.
 6. Remediator sessions take batches of `accepted` findings through validate → census → plan → fix → self-check.

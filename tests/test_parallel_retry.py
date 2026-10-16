@@ -17,6 +17,7 @@ import contextlib
 import io
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -266,12 +267,22 @@ class TheFlagOffPathIsTheOldPath(unittest.TestCase):
         self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
         return p.stdout
 
+    @staticmethod
+    def without_profile_digest(out):
+        # `status` names the operator profile with its digest, and the two runs write two
+        # different profiles — the flag absent, then the flag written as `off` — so that
+        # digest differs by construction. Only the 16 hex digits are masked: the path,
+        # and every byte the decision path prints, still have to agree.
+        return re.sub(r"^(policy: .*  sha256:)[0-9a-f]{16}$", r"\1<digest>", out,
+                      flags=re.M)
+
     def test_the_decision_output_is_identical_with_the_flag_absent_and_off(self):
         fx = Fixture(two_pass_doc())
         self.addCleanup(fx.cleanup)
         absent = self.run_status(fx, "auditor_cmd=true {prompt}\n")
         off = self.run_status(fx, "auditor_cmd=true {prompt}\nparallel_passes=off\n")
-        self.assertEqual(absent, off)
+        self.assertEqual(self.without_profile_digest(absent),
+                         self.without_profile_digest(off))
         print("\nflag absent vs parallel_passes=off: byte-identical "
               f"({len(absent)} bytes)\n{absent.strip()}")
 

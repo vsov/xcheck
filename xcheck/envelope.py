@@ -175,7 +175,8 @@ def executable_version(exe, env=None):
 
 def current_revision(project):
     """The state revision this session was dispatched against, or 0 when there is no
-    readable state (a bare fixture; `next`/`loop` refuse such a project anyway)."""
+    readable state — a new audit's Planner, dispatched before its plan is migrated, or a
+    bare fixture; `next`/`loop` refuse any other project with no state."""
     try:
         return load_state(Path(project) / "audit").state_revision
     except StateError:
@@ -792,11 +793,14 @@ def store(project, rec, event=None, live=()):
         try:
             state = load_state(audit)
         except StateError as e:
-            # A project with no readable state cannot be dispatched by `next`/`loop` at
-            # all — this path is reachable only by calling the runner directly (a test, a
-            # manual harness). Say so out loud rather than aborting a session that is
-            # already under way for a condition its own dispatcher already refuses.
-            print(f"note: envelope not stored in state.json ({e}); audit/{EVENTS_FILENAME} "
+            # `next`/`loop` reach this for one dispatch only: a new audit's Planner, which
+            # runs before its plan is migrated (`decision.pre_state_decision`). Any other
+            # project with no readable state is refused before dispatch, so for those this
+            # is a test or a manual harness calling the runner directly. Say so out loud
+            # rather than aborting a session that is already under way.
+            why = (e if os.path.lexists(audit / "state.json")
+                   else "there is none until the plan is migrated")
+            print(f"note: envelope not stored in state.json ({why}); audit/{EVENTS_FILENAME} "
                   f"still carries this session")
             if event:
                 emit(project, event, rec.get("session_id"), **_event_payload(rec))

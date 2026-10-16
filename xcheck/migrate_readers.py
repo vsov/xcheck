@@ -24,9 +24,9 @@ import re
 from pathlib import Path
 
 from xcheck.md_prose import (
-    FRONTMATTER_RE, LIMIT_KEYS, _DIMENSIONS_RE, _atx_indent_ok, _declared_form_content,
-    _is_delimiter_row, _norm_cell, _parse_frontmatter, _pipe_cells, _section_table,
-    _strip_nonstructure
+    FRONTMATTER_RE, LIMIT_KEYS, _DIMENSIONS_RE, _NORMS_RE, _UNITMAP_RE, _atx_indent_ok,
+    _declared_form_content, _is_delimiter_row, _norm_cell, _parse_frontmatter,
+    _pipe_cells, _section_table, _strip_nonstructure
 )
 from xcheck.util import (
     LEDGER_COLUMNS, _canon_calendar_date, _read_audit_text,
@@ -477,14 +477,10 @@ def _table_has_row_with(text, heading_re, labels, row_ok=None) -> bool:
     return False
 
 
-_UNITMAP_RE = re.compile(r"^##\s+\d+\.\s+Unit map\b", re.I)
-
 # The other AUDIT.md sections read as durable state (templates/AUDIT-*.md headings):
-# the Norms catalog table (F-0157 resolves `norm source` against its `id` column), the
-# Pass queue (F-0156 reads entries only from its body) and the Limits overrides
-# (F-0158 reads declarations only from its body).
-_NORMS_RE = re.compile(r"^##\s+\d+\.\s+Norms catalog\b", re.I)
-
+# the Pass queue (F-0156 reads entries only from its body) and the Limits overrides
+# (F-0158 reads declarations only from its body). The Norms catalog (F-0157 resolves
+# `norm source` against its `id` column) and the Unit map are matched by md_prose.
 _QUEUE_RE = re.compile(r"^##\s+\d+\.\s+Pass queue\b", re.I)
 
 _LIMITS_RE = re.compile(r"^##\s+\d+\.\s+Limits\b", re.I)

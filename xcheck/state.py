@@ -1113,6 +1113,19 @@ def _build(doc):
 # the public boundary
 # ---------------------------------------------------------------------------
 
+def no_state_message(path):
+    """The one wording for a project that has no state document.
+
+    0.9.5 ended "or `install.sh` to start a new one", and `install.sh` writes no state by
+    design (README §5.2): an operator who followed the advice reinstalled and was refused
+    in the same words. State comes from `xcheck migrate` in both cases — a new audit's
+    plan once the Planner has written it, or an old Markdown audit being converted — so
+    that is the only command the message names."""
+    return (f"{path}: no state file — `xcheck migrate` builds one from audit/AUDIT.md, "
+            f"once: for a new audit after the Planner has written the plan, for a "
+            f"Markdown audit from before 0.8 to convert it")
+
+
 def load_state(audit_dir):
     """`bytes -> parse -> schema -> cross-record -> immutable State`, or raise.
 
@@ -1125,8 +1138,7 @@ def load_state(audit_dir):
     try:
         raw = path.read_bytes()
     except FileNotFoundError:
-        raise StateError(f"{path}: no state file — run `xcheck migrate` to convert an "
-                         f"existing Markdown audit, or `install.sh` to start a new one")
+        raise StateError(no_state_message(path))
     except OSError as e:
         raise StateError(f"{path}: cannot read ({e.strerror})")
     try:
@@ -1377,7 +1389,11 @@ def write_state(audit_dir, state, bump=True, head_before=None, txn=None):
 
 
 def empty_state(generated_by, head_before=None):
-    """A valid, empty State — what `install.sh` and the migration start from."""
+    """A valid, empty State — what a new audit holds before its plan is migrated.
+
+    Never written by `install.sh`, which leaves state alone (README §5.2). The pre-state
+    decision (`decision.pre_state_decision`) prices a Planner dispatch against it, since
+    that dispatch happens before there is a document to read."""
     return State(schema_version=SCHEMA_VERSION, state_revision=0,
                  generated_by=generated_by, head_before=head_before,
                  catalogs=Catalogs())

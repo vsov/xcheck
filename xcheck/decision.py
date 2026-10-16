@@ -14,7 +14,8 @@ from xcheck.util import (
     TELEMETRY_SOURCES, TERMINAL, _broken_superseded, conf_flag, conf_number,
     construal_key
 )
-from xcheck.state import load_state, next_owner
+from xcheck.state import (STATE_FILENAME, StateError, empty_state, load_state, next_owner,
+                          no_state_message)
 # Imported at module level, not inside the gate: `budget` imports `decision`
 # only INSIDE its own functions (for `metrics_report`), so this direction of the
 # edge is safe and the flag name is readable where the gate reads it.
@@ -408,6 +409,84 @@ def plan_complete(state):
     return bool(cat and cat.norms and cat.dimensions and cat.units and state.queue)
 
 
+def pre_state_decision(project: Path, conf):
+    """`(kind, detail, report)` for a project with no `audit/state.json` yet, None for
+    one that has it — `state_and_decision` decides those.
+
+    A new audit has no machine state until its plan is migrated: the Planner runs first
+    (XCHECK.md §3), and `xcheck migrate` is the operator act that loads its AUDIT.md
+    (§2). Through 0.9.5 nothing could DISPATCH that first session. `state_and_decision`
+    refuses a tree with no state document and `install.sh` writes none by design, so the
+    Planner launcher refused on every fresh install and the only way to plan was an
+    `uncontained-direct` session started by hand.
+
+    The tree is read only when `migrate.not_fresh_install` proves it is a fresh install;
+    anything else keeps the refusal, with the reason appended. On a fresh tree:
+
+      - `stop-migrate` when AUDIT.md converts into a COMPLETE plan (`plan_complete`): the
+        Planner's stop condition is met and loading the plan is the operator's act, never
+        the orchestrator's (§2). `detail` is the queue the operator is asked to review.
+      - `run-planner` otherwise: the plan is unwritten, or unfinished (F-0077 — an
+        under-planned audit routes back to the Planner).
+
+    `report` is the converter's account of AUDIT.md, which `status` prints. Nothing is
+    written: the conversion is `migrate.convert`, which writes nowhere.
+    """
+    audit = Path(project) / "audit"
+    path = audit / STATE_FILENAME
+    if os.path.lexists(path):
+        return None
+    # Imported here, never at module scope: the converter reads Markdown, and loading it
+    # is reserved for the trees it is about (tests/test_no_bypass.py).
+    from xcheck import migrate
+    problem = migrate.not_fresh_install(project)
+    if problem:
+        raise StateError(f"{no_state_message(path)}. The Planner is not dispatched into "
+                         f"this tree: {problem}.")
+    state, report = migrate.convert(audit)
+    if state is not None and plan_complete(state):
+        return "stop-migrate", [q.id for q in state.queue], report
+    # §4 rule 9 cannot be honoured here, so it refuses rather than waving the charter
+    # through. A construal is admitted into `state.json`, which does not exist yet, and
+    # the construal FILE the gate would ask for makes the tree stop being fresh.
+    if conf_flag(conf, "construal_gate"):
+        raise StateError(
+            f"{no_state_message(path)}. construal_gate is on, and a construal is admitted "
+            f"into the state document, which a new audit does not have until its plan is "
+            f"migrated, so the Planner's charter cannot pass the gate. Plan with "
+            f"`construal_gate=off` in audit/orchestrator.conf, run `xcheck migrate`, then "
+            f"turn the gate back on.")
+    kind, detail = "run-planner", None
+    fired = _budget_stop(project, conf, empty_state("xcheck (no state yet)"), kind, detail)
+    if fired:
+        return fired[0], fired[1], report
+    return kind, detail, report
+
+
+def _budget_stop(project, conf, state, kind, detail):
+    """The budget ceiling that refuses this dispatch, as `(kind, detail)`, or None.
+
+    One home for both decisions that can dispatch: `state_and_decision`, and
+    `pre_state_decision` for a Planner that runs before there is state. The hard ceilings
+    (a dispatch cap, a charter repeated too often) count dispatches in the event stream,
+    so they hold before migration too."""
+    if not kind.startswith("run-") or not conf_flag(conf, budget.FLAG):
+        return None
+    from xcheck.envelope import read_events
+    _role, _charter = role_and_charter(kind, detail)
+    fired = budget.gates(state, conf, read_events(project), charter=_charter,
+                         cmd=conf.get(f"{(_role or '').lower()}_cmd"))
+    # PHASE 12: `no-verdict` is a THIRD outcome and is not a stop. Below the telemetry
+    # coverage floor the statistical gates cannot honestly extrapolate, so they say so
+    # and the dispatch proceeds — refusing to judge is not the same as judging clear,
+    # and it is emphatically not grounds to block work on a machine whose only fault
+    # is that nobody configured a telemetry adapter. `xcheck status` prints the notice
+    # so the absence of a verdict is visible rather than inferred from silence.
+    if fired is not None and fired[0] != budget.NO_VERDICT:
+        return fired
+    return None
+
+
 def state_and_decision(project: Path, conf):
     """Read the ONE canonical state document, then decide. Returns
     `(state, unchecked, checked, kind, detail)`.
@@ -542,19 +621,9 @@ def state_and_decision(project: Path, conf):
     # Evaluated on every decision rather than once per run: a ceiling that is only a
     # precondition gets walked through exactly once, by the session already in flight
     # when it was checked.
-    if kind.startswith("run-") and conf_flag(conf, budget.FLAG):
-        from xcheck.envelope import read_events
-        _role, _charter = role_and_charter(kind, detail)
-        fired = budget.gates(state, conf, read_events(project), charter=_charter,
-                             cmd=conf.get(f"{(_role or '').lower()}_cmd"))
-        # PHASE 12: `no-verdict` is a THIRD outcome and is not a stop. Below the telemetry
-        # coverage floor the statistical gates cannot honestly extrapolate, so they say so
-        # and the dispatch proceeds — refusing to judge is not the same as judging clear,
-        # and it is emphatically not grounds to block work on a machine whose only fault
-        # is that nobody configured a telemetry adapter. `xcheck status` prints the notice
-        # so the absence of a verdict is visible rather than inferred from silence.
-        if fired is not None and fired[0] != budget.NO_VERDICT:
-            return state, unchecked, checked, fired[0], fired[1]
+    fired = _budget_stop(project, conf, state, kind, detail)
+    if fired:
+        return state, unchecked, checked, fired[0], fired[1]
     # A held pass is still OWED. Every other branch of the decision stays exactly as it
     # was — a Verifier, a Remediator or a human gate outranks this and should run — but
     # `done` over an embargoed queue would certify a plan that has unfinished passes,

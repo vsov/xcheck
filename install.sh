@@ -1,5 +1,15 @@
 #!/bin/sh
-# Install the xcheck methodology into a target project: ./install.sh /path/to/project
+# Install the xcheck methodology into a target project:
+#   ./install.sh [--type code|text] /path/to/project
+#
+# `--type` picks the template AUDIT.md starts from: `code` for a codebase, `text` for a
+# text corpus. It has a default (`text`, what this script always installed) where the
+# operator profile's trust level has none, because a wrong template is cheap to undo
+# until the Planner runs: one `cp` over a file that holds nothing yet.
+#
+# This sets up the SUBJECT only. The operator profile — what each role runs, and inside
+# what boundary — lives outside every audited repository, so `operator-profile.sh`
+# writes it, once per machine; the closing lines below say so.
 #
 # Deliberately shell-only and small. This runs in target projects that may have no
 # Python environment configured, and its simplicity is a feature — an installer that
@@ -17,7 +27,41 @@
 set -e
 cd "$(dirname "$0")"
 SRC=$(pwd)
-TARGET=${1:?usage: ./install.sh /path/to/project}
+
+usage() {
+    echo "usage: ./install.sh [--type code|text] /path/to/project"
+    echo "  --type code   AUDIT.md starts from templates/AUDIT-code.md: a codebase"
+    echo "  --type text   AUDIT.md starts from templates/AUDIT-text.md: a text corpus (default)"
+}
+TYPE=
+TARGET=
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --type)    [ $# -ge 2 ] || { usage >&2; exit 2; }; TYPE=$2; shift 2 ;;
+        --type=*)  TYPE=${1#--type=}; shift ;;
+        -h|--help) usage; exit 0 ;;
+        -*)        echo "install: unknown option $1" >&2; usage >&2; exit 2 ;;
+        *)         [ -z "$TARGET" ] || { usage >&2; exit 2; }; TARGET=$1; shift ;;
+    esac
+done
+[ -n "$TARGET" ] || { usage >&2; exit 2; }
+# Checked before anything is written: a refused install leaves no `audit/` behind.
+case "${TYPE:-text}" in
+    code|text) ;;
+    *) echo "install: --type $TYPE is not a project type (code or text)" >&2; exit 2 ;;
+esac
+
+# What the operator does next, printed on both ways out of this script. The profile step
+# comes first because without it `xcheck next` and every launcher that wraps it refuse
+# before a session starts, and nothing on the install path used to say so.
+finish() {
+    echo "         $AUDIT_NOTE"
+    echo "next:    1. once per machine, an operator profile, outside every audited repository."
+    echo "            \`xcheck next\` and the launchers dispatch nothing until one exists:"
+    echo "              $SRC/operator-profile.sh --trust trusted|untrusted /path/to/operator.conf"
+    echo "         2. plan the audit: README §6, Step 1."
+}
+
 mkdir -p "$TARGET/audit/findings" "$TARGET/audit/passes" "$TARGET/audit/plans" "$TARGET/audit/construals" "$TARGET/audit/templates"
 
 # The shipped set — the ONE list, used for both copying and the manifest, so a file
@@ -27,8 +71,24 @@ SHIPPED="XCHECK.md templates/finding.md templates/class-finding.md templates/pas
 cp XCHECK.md "$TARGET/audit/XCHECK.md"
 cp templates/finding.md templates/class-finding.md templates/pass.md templates/plan.md templates/construal.md "$TARGET/audit/templates/"
 # AUDIT.md and LEDGER.md are the OPERATOR's from the moment they exist: created once,
-# never refreshed. `upgrade` will not touch them either.
-[ -f "$TARGET/audit/AUDIT.md" ] || cp templates/AUDIT-text.md "$TARGET/audit/AUDIT.md"   # use AUDIT-code.md for code projects
+# never refreshed. `upgrade` will not touch them either, and neither does `--type`: an
+# AUDIT.md that exists is reported on, never replaced — even one that still holds
+# nothing but a template, for which the report names the `cp` that switches it.
+if [ ! -f "$TARGET/audit/AUDIT.md" ]; then
+    cp "templates/AUDIT-${TYPE:-text}.md" "$TARGET/audit/AUDIT.md"
+    AUDIT_NOTE="audit/AUDIT.md from templates/AUDIT-${TYPE:-text}.md"
+    [ -n "$TYPE" ] || AUDIT_NOTE="$AUDIT_NOTE (the default; --type code for a codebase)"
+else
+    AUDIT_NOTE="audit/AUDIT.md kept: it exists, and it is the operator's"
+    for t in code text; do
+        cmp -s "$TARGET/audit/AUDIT.md" "templates/AUDIT-$t.md" || continue
+        AUDIT_NOTE="audit/AUDIT.md kept: it is the unfilled $t template"
+        if [ -n "$TYPE" ] && [ "$TYPE" != "$t" ]; then
+            AUDIT_NOTE="$AUDIT_NOTE, and install.sh never replaces an AUDIT.md. To switch:
+           cp $SRC/templates/AUDIT-$TYPE.md $TARGET/audit/AUDIT.md"
+        fi
+    done
+fi
 [ -f "$TARGET/audit/LEDGER.md" ] || printf '| id | title | severity | status | next | updated |\n|---|---|---|---|---|---|\n' > "$TARGET/audit/LEDGER.md"
 
 # ---- provenance -----------------------------------------------------------------
@@ -45,6 +105,7 @@ else
     echo "         audit/MANIFEST.sha256 were NOT written. The install is complete and"
     echo "         usable; \`xcheck upgrade\` will report the copy as unprovenanced and"
     echo "         refuse to refresh files it cannot prove it shipped."
+    finish
     exit 0
 fi
 
@@ -86,3 +147,4 @@ else
     echo "install: xcheck $VERSION (schema $SCHEMA, source $SOURCE_REF) -> $TARGET/audit"
 fi
 echo "         provenance: audit/.provenance.json, manifest: audit/MANIFEST.sha256 ($(wc -l < "$TARGET/audit/MANIFEST.sha256" | tr -d ' ') files)"
+finish

@@ -368,6 +368,17 @@ EXPECTED_ADDED = {
                            "REPORT, which must never raise: it is called while building "
                            "a refusal, and a report that explodes turns an addressed "
                            "operator error into a traceback",
+
+    # The fresh-install route. The monolith had no state document, so it had no
+    # "before the state document exists" to decide in; the Planner of a new audit could
+    # not be dispatched by anything until this existed.
+    "pre_state_decision": "fresh install — the decision for a project with no "
+                          "state.json yet: the Planner, or the operator's migrate gate, "
+                          "and only on a tree proved to be a fresh install",
+    "_budget_stop": "fresh install — the budget gate over a dispatch, shared by both "
+                    "decisions that can dispatch so a pre-state Planner is priced too",
+    "_status_tail": "fresh install — the quarantine, lock, sandbox and decision lines "
+                    "`status` prints whether or not a state document exists",
 }
 
 # Modules that are NEW work, not split-out monolith code. Their names are exempt

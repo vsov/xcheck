@@ -42,7 +42,10 @@ from tests.harness import XCHECK
 # 168 -> 169 in phase 8 (backpressure): one more `report_gate` row. `stop-critical` is a
 # new human gate, and the F-0116 table exists so a new gate cannot ship with an empty or
 # duplicated message — a stop that reads like another stop teaches the operator nothing.
-EXPECTED_CHECKS = 169
+# 169 -> 170 for the fresh-install route: one more `report_gate` row. `stop-migrate` is
+# the gate a new audit reaches once its Planner has written a complete plan, for the same
+# reason `stop-critical` got one.
+EXPECTED_CHECKS = 170
 
 
 class LegacySelftest(unittest.TestCase):

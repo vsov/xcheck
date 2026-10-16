@@ -389,9 +389,14 @@ def no_profile_refusal(explicit=None):
         f"Create one and point at it:\n"
         f"    export {OPERATOR_PROFILE_ENV}=/path/to/operator.conf\n"
         f"    xcheck --policy /path/to/operator.conf <command>\n"
-        f"or set {XDG_CONFIG_ENV} and write $({XDG_CONFIG_ENV})/{OPERATOR_PROFILE_RELATIVE}.\n"
-        "`xcheck --policy PATH` with a path that does not exist prints the template to "
-        "start from.")
+        f"or set {XDG_CONFIG_ENV} and write ${XDG_CONFIG_ENV}/{OPERATOR_PROFILE_RELATIVE}.\n"
+        # The hint used to name a bare `xcheck --policy PATH`, which the grammar rejects
+        # (`--policy is not valid for no command`): the template is printed after a
+        # command is parsed. `tests/test_operator_onboarding.py` runs what this says.
+        "`operator-profile.sh`, beside `install.sh` in the xcheck repository, writes one "
+        "from the template and prints the line that points at it. To start from the "
+        "template by hand, `xcheck --policy PATH status` prints it while nothing exists "
+        "at PATH.")
 
 
 # PHASE 1 (third audit, release blocker). The previous run moved policy OUT of the

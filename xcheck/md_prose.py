@@ -476,6 +476,13 @@ def _norm_cell(c):
 
 _DIMENSIONS_RE = re.compile(r"^##\s+\d+\.\s+Dimensions\b", re.I)
 
+# The other two catalog sections. They sit here beside Dimensions, not in the
+# converter's legacy reader, because the converter is not their only reader: the
+# selftest holds the shipped templates to the column names the converter reads, and
+# no module outside the converter may load that reader (tests/test_no_bypass.py).
+_NORMS_RE = re.compile(r"^##\s+\d+\.\s+Norms catalog\b", re.I)
+_UNITMAP_RE = re.compile(r"^##\s+\d+\.\s+Unit map\b", re.I)
+
 FRONTMATTER_RE = re.compile(r"^---\n(.*?)\n---[ \t]*(?:\n|$)", re.S)
 
 def _yaml_absent(s):

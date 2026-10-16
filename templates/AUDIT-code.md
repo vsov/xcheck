@@ -7,7 +7,13 @@
 <!-- Every norm source with path + one-line scope. For a codebase
      typically: spec/design docs, ADRs, CONTEXT.md, README claims,
      invariant lists, benchmark reports.
-     Do not read norms fully — catalog them. -->
+     Do not read norms fully — catalog them.
+     Keep the column names below: `xcheck migrate` finds each column by
+     its header, and a plan that renames one does not load. Ids are N1,
+     N2, …, and each dimension's `norm source` in §2 names them. -->
+
+| id | source | scope |
+|---|---|---|
 
 ## 2. Dimensions
 <!-- Pick from the library below; add project-specific ones. Every
@@ -27,7 +33,14 @@
 <!-- Natural code units (modules/subsystems) with kloc estimates.
      Pass-size rule (XCHECK.md §4 rule 4): split so one pass reads
      attentively in one session (heuristic: ≤2 kloc) — split large units,
-     batch small ones. -->
+     batch small ones.
+     Keep the column names below: `xcheck migrate` finds each column by
+     its header, and a plan that renames `unit`, `material` or
+     `responsibility` does not load. A unit id such as U01 is what §4 and
+     every finding name the unit by. -->
+
+| unit | material | approx. size | responsibility |
+|---|---|---|---|
 
 ## 4. Pass queue
 <!-- The dimension × unit-batch matrix, prioritized: critical dimensions

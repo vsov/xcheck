@@ -82,7 +82,7 @@ from xcheck.util import (
     json_output_issues, load_conf
 )
 from xcheck import __version__, budget, envelope, ledger, policy, scope
-from xcheck.state import StateError, load_state
+from xcheck.state import STATE_FILENAME, StateError, empty_state, load_state
 from xcheck.views import refuse_on_drift, verify_views, write_views
 from xcheck.write import VERBS as WRITE_VERBS
 from xcheck.validate import (
@@ -93,7 +93,8 @@ from xcheck.runner import (
     material_effect_probe, material_snapshot, orchestrator_source_digest,
     quarantine_bundles, resolve_profile, retry_backoff, retry_decision, run_session
 )
-from xcheck.decision import metrics_report, role_and_charter, state_and_decision
+from xcheck.decision import (metrics_report, pre_state_decision, role_and_charter,
+                             state_and_decision)
 from xcheck import parallel
 
 def _emit_json(payload, schema, what):
@@ -143,7 +144,15 @@ def status_payload(project, state, unchecked, checked, kind, detail, lock):
 
 
 def cmd_status(project: Path, conf, as_json=False):
-    state, unchecked, checked, kind, detail = state_and_decision(project, conf)
+    # A new audit whose plan is not migrated yet has no state document, and is reported
+    # as the EMPTY state it is: revision 0, which `write_state` never writes, so a
+    # `--json` consumer can tell it from any state that exists.
+    pre = pre_state_decision(project, conf)
+    if pre is None:
+        state, unchecked, checked, kind, detail = state_and_decision(project, conf)
+    else:
+        kind, detail, report = pre
+        state, unchecked, checked = empty_state(f"xcheck {__version__}"), [], []
     records = list(state.findings) + list(state.class_findings)
     counts = {}
     for r in records:
@@ -154,6 +163,22 @@ def cmd_status(project: Path, conf, as_json=False):
                            Lock(project / "audit", "?").read()),
             STATUS_SCHEMA, "status")
     print(f"project: {project}  (xcheck {__version__})")
+    if pre is not None:
+        print(f"state: none yet — a new audit has no audit/{STATE_FILENAME} until "
+              f"`xcheck migrate` loads its plan")
+        if report.defects:
+            print(f"plan: audit/AUDIT.md does not convert yet — {len(report.defects)} "
+                  f"defect(s); `xcheck --dry-run migrate` lists them")
+        elif kind == "stop-migrate":
+            c = report.counts
+            print(f"plan: audit/AUDIT.md converts — {c.get('norms', 0)} norm(s), "
+                  f"{c.get('dimensions', 0)} dimension(s), {c.get('units', 0)} unit(s), "
+                  f"{c.get('queue', 0)} queued pass(es)")
+        else:
+            print("plan: audit/AUDIT.md converts, but is not a complete plan — the "
+                  "Planner stops at norms, dimensions, a unit map and a non-empty pass "
+                  "queue (XCHECK.md §3)")
+        return _status_tail(project, conf, state, kind, detail)
     print(f"state: schema {state.schema_version}, revision {state.state_revision}"
           + (f", head {state.head_before[:7]}" if state.head_before else ""))
     print(f"passes: {len(checked)} done, {len(unchecked)} queued {unchecked or ''}")
@@ -197,6 +222,14 @@ def cmd_status(project: Path, conf, as_json=False):
         print(line)
     for line in budget.derived_report():
         print(f"   derived: {line}")
+    _status_tail(project, conf, state, kind, detail)
+
+
+def _status_tail(project, conf, state, kind, detail):
+    """The lines `status` prints whether or not a state document exists yet: pending
+    quarantine, the lock, the sandbox and the decision. A Planner session that failed
+    before the plan was migrated is quarantined like any other, and is just as much
+    waiting on a human."""
     bundles = quarantine_bundles(project)
     if bundles:
         # An alarm, not a status line: each of these is a session whose work is sitting
@@ -225,6 +258,14 @@ def print_sandbox(conf, state):
     Two different questions, so two lines. "What would run now" comes from the conf;
     "what was actually enforced" comes from the envelope's capability report, which is
     the only one of the two that is evidence."""
+    # The operator profile every line below is read from, in the same words
+    # `require_policy` prints at dispatch. Without it this command answered
+    # `decision: run-planner` on a machine where `next` refuses before any session, and
+    # the launchers send an operator HERE to see which profile is in force.
+    resolved = policy.resolve()
+    print(f"policy: {resolved}  sha256:{policy.profile_digest(resolved)[:16]}" if resolved
+          else "policy: none found — `xcheck next` and `xcheck loop` refuse until one "
+               "resolves; `operator-profile.sh` in the xcheck repository writes one")
     writing = resolve_profile(conf, "Remediator")
     reading = resolve_profile(conf, "Auditor")
     line = (f"sandbox: {writing.name} for writing roles, {reading.name} for reading "
@@ -342,6 +383,10 @@ def _dispatch_with_retry(project, conf, role, charter, dry_run, lock, ckey,
         rc = run_session(project, conf, role, charter, dry_run, lock=lock,
                          construal=ckey, construal_prompt=construal_prompt,
                          attempt=attempt)
+        # Only a new audit's Planner is dispatched with no state document
+        # (`pre_state_decision`). Its session went to the event stream alone, and the
+        # plan it writes reaches state through `xcheck migrate`, never through a verb.
+        before_migrate = not os.path.lexists(Path(project) / "audit" / STATE_FILENAME)
         # The session's own account of what it did, recorded beside the session that
         # made it. Emitted HERE rather than inside `run_session` because this call is
         # inside the writing lock that `cmd_next` holds, and a state write outside that
@@ -353,7 +398,14 @@ def _dispatch_with_retry(project, conf, role, charter, dry_run, lock, ckey,
             # operator the difference between "the provider fell over" and "the session
             # ran fine and moved nothing", which is what 136 of the 151 Ouroboros-4
             # sessions did while every one of them printed `ok`.
-            if rc.protocol == envelope.PROTOCOL_NO_PROGRESS:
+            if rc.protocol == envelope.PROTOCOL_NO_PROGRESS and before_migrate:
+                # Not "the charter is exactly where it was": a plan was the work, and
+                # whether it is ready is a fact `status` reads off AUDIT.md.
+                print(f"protocol: this {role} session ended {rc.outcome} with no state "
+                      f"document to record in — its work is audit/AUDIT.md, which "
+                      f"becomes state only through `xcheck migrate`. `xcheck status` "
+                      f"says whether the plan is ready.")
+            elif rc.protocol == envelope.PROTOCOL_NO_PROGRESS:
                 print(f"protocol: this {role} session ended {rc.outcome} without recording "
                       f"a canonical transition — no finding, coverage, verdict or typed "
                       f"refusal reached audit/state.json, so the charter is exactly where "
@@ -375,7 +427,13 @@ def _dispatch_with_retry(project, conf, role, charter, dry_run, lock, ckey,
                                         if k != "session_id"})
         if rc == 0 or dry_run:
             return rc
-        last = (load_state(Path(project) / "audit").sessions or ({},))[-1]
+        if before_migrate:
+            # No `sessions[]` to read the last session from; the result in hand is the
+            # same account `envelope.store` sent to the event stream.
+            last = {"session_id": getattr(rc, "session_id", None),
+                    "outcome": getattr(rc, "outcome", None)}
+        else:
+            last = (load_state(Path(project) / "audit").sessions or ({},))[-1]
         outcome = last.get("outcome") or "crash"
         # TWO answers, AND-ed, both failing closed. `probed` is what the PROJECT says,
         # over tracked changes, untracked files, audit artifacts and git HEAD; the
@@ -449,7 +507,13 @@ def cmd_next(project: Path, conf, dry_run, assume_yes=False):
             # This is the clearest measure of what moving the control plane bought:
             # not a fixed sync, no sync, and no mixed-ownership hazard from a write
             # the orchestrator only made to reconcile two representations.
-        _state, unchecked, checked, kind, detail = state_and_decision(project, conf)
+        # A new audit's Planner runs before there is a state document to decide from
+        # (`pre_state_decision`); every other project decides from its state.
+        pre = pre_state_decision(project, conf)
+        if pre is None:
+            _state, unchecked, checked, kind, detail = state_and_decision(project, conf)
+        else:
+            (kind, detail, _report), _state, unchecked, checked = pre, None, [], []
         if kind.startswith("stop-") or kind.startswith("done"):
             # Phase 9: a gate is the most consequential thing the cycle does — it hands
             # control to a human — so it is the one outcome a machine reader most needs
@@ -755,6 +819,18 @@ def report_gate(kind, detail):
         # one defect as four unrelated findings is the work this detector exists to save.
         for line in _class_lines():
             print(line)
+    elif kind == "stop-migrate":
+        # Once per audit: a new audit has no state until its plan is loaded, and loading
+        # it is the operator's act, never the orchestrator's (XCHECK.md §2).
+        passes = list(detail) if isinstance(detail, (list, tuple)) else []
+        print(f"gate: plan ready — audit/AUDIT.md converts into a complete plan with "
+              f"{len(passes)} queued pass(es){': ' + ', '.join(passes) if passes else ''}. "
+              f"A new audit has no machine state until the operator loads its plan, and "
+              f"that is never automatic. Review the pass queue in audit/AUDIT.md (dropping "
+              f"or reordering passes now is cheap and needs no gate), then run `xcheck "
+              f"--dry-run migrate` and `xcheck migrate`. From then on the queue changes "
+              f"only through `xcheck queue-pass`, `xcheck amend-pass` and `xcheck "
+              f"cancel-pass`.")
     elif kind == "stop-needs-human":
         print(f"gate: ⚠ needs-human on {detail} — the human decides (see the finding file)")
     elif kind == "stop-norm-ratification":

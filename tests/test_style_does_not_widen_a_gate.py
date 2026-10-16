@@ -324,7 +324,16 @@ COUNTERFACTUALS = [
 # claim, which is where the scan needs it. Nothing in the 0.9.5 entry makes a NEW
 # containment claim; the phases it describes are about the journal, the dispatchers and
 # the metrics, none of which widen what a profile promises.
-PRE_RUN_CLAIMS = 209
+# Moved 209 -> 211 on 2026-10-16, same debt paid. README.md went 45 -> 47 and every other
+# document is byte-for-byte the same count; diffed by TEXT, the two new claims are both in
+# the new §5.3, which tells an operator to create the profile before the first session:
+# "the containment it runs inside" (what the profile holds) and "that also sets
+# `sandbox_profile=container`" (what `operator-profile.sh --trust untrusted` writes).
+# Neither widens a guarantee; both say where an existing one is configured. Unscoped
+# stayed at 0: the section's first paragraph names `orchestrated` BEFORE the first claim.
+# The first run of this gate after the section was written reported 2 unscoped, and the
+# fix was that clause, not a looser gate.
+PRE_RUN_CLAIMS = 211
 PRE_RUN_UNSCOPED = 0
 PRE_RUN_OFFENDERS = 0
 # 2 -> 0 in the same phase, and DOWNWARD, which is the direction that needs no defence:

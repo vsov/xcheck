@@ -28,13 +28,15 @@ import re
 import shutil
 from pathlib import Path
 
-from xcheck.md_prose import (FRONTMATTER_RE, LIMIT_KEYS, _DIMENSIONS_RE,
-                             _parse_frontmatter, _section_table)
-from xcheck.migrate_readers import (_NORMS_RE, _QUEUE_ENTRY_RE, _QUEUE_RE, _UNITMAP_RE,
-                                    _header_col, _section_bodies, load_construal_files,
+from xcheck.md_prose import (FRONTMATTER_RE, LIMIT_KEYS, _DIMENSIONS_RE, _NORMS_RE,
+                             _UNITMAP_RE, _parse_frontmatter, _section_table)
+from xcheck.ledger import EVENTS_FILENAME, read_stream
+from xcheck.migrate_readers import (_QUEUE_ENTRY_RE, _QUEUE_RE, _header_col,
+                                    _section_bodies, load_construal_files,
                                     load_finding_files, parse_ledger, parse_limits)
 from xcheck.state import (SCHEMA_VERSION, STATE_FILENAME, StateError, _build, _validate,
                           git_head, next_owner, write_state)
+from xcheck.upgrade import PROVENANCE, read_provenance
 from xcheck.util import _read_audit_text
 from xcheck.views import write_views
 
@@ -475,6 +477,74 @@ def read_legacy(audit_dir: Path, generated_by="xcheck migrate"):
     return doc, report
 
 
+def convert(audit_dir, generated_by="xcheck migrate"):
+    """`(state, report)`: the State `migrate` would write, validated and built, and
+    written nowhere. `state` is None whenever the report carries a defect.
+
+    One home for "does this tree convert", because two callers ask it: `migrate`, which
+    then writes, and `decision.pre_state_decision`, which only needs the answer. Two
+    copies of the question could disagree, and `status` would then call a plan ready
+    that `migrate` refuses."""
+    audit_dir = Path(audit_dir)
+    doc, report = read_legacy(audit_dir, generated_by)
+    if doc is None or report.defects:
+        return None, report
+    try:
+        _validate(doc, str(audit_dir / STATE_FILENAME))
+        return _build(doc), report
+    except StateError as e:
+        report.defect(f"the converted document fails the schema: {e}")
+        return None, report
+
+
+# What already being an audit RECORD looks like on disk, as opposed to a plan: every
+# directory `read_legacy` takes records from. A fresh install has all four, empty.
+RECORD_DIRS = ("findings", "passes", "plans", "construals")
+
+
+def not_fresh_install(project):
+    """Why `project` is NOT a fresh install, or None when it is one.
+
+    Asked only when there is no `audit/state.json`. Such a tree is either a new audit
+    whose plan is not migrated yet, or an old Markdown audit — and reading the second as
+    the first would let Markdown back into the control plane, which is the bypass the
+    state document exists to close (tests/test_no_bypass.py). So "fresh" is proved, not
+    assumed, and each of its three facts fails closed:
+
+      - `install.sh` left its provenance record: the tree was installed by a xcheck that
+        keeps state in `state.json`, not carried over from one that kept it in Markdown;
+      - nothing has been recorded yet: no finding, pass report, plan or construal file,
+        and no LEDGER.md row;
+      - the event stream holds no `state_transition`. Only a write verb emits one, after
+        a durable state write, so one in the stream means a state document existed and
+        its absence now is a loss to recover, not a beginning.
+    """
+    audit = Path(project) / "audit"
+    prov = read_provenance(audit)
+    if not isinstance(prov, dict) or not prov.get("xcheck_version"):
+        return (f"there is no readable audit/{PROVENANCE}, so install.sh did not create "
+                f"this tree, and a tree with no state and no installer record is read as "
+                f"an old audit to convert, never as a new one")
+    records = []
+    for sub in RECORD_DIRS:
+        n = sum(1 for _ in (audit / sub).glob("*.md"))
+        if n:
+            records.append(f"{n} file(s) in {sub}/")
+    rows = parse_ledger(audit)
+    if rows:
+        records.append(f"{len(rows)} LEDGER.md row(s)")
+    if records:
+        return (f"it already holds audit records ({', '.join(records)}), so it is an "
+                f"audit to convert, not a new one")
+    moved = sum(1 for e in read_stream(project) if e.get("event") == "state_transition")
+    if moved:
+        return (f"audit/{EVENTS_FILENAME} records {moved} state transition(s), so a "
+                f"state document existed here and is gone. Restore audit/{STATE_FILENAME} "
+                f"from git or a backup: re-planning or re-migrating would start the "
+                f"audit over and orphan that history")
+    return None
+
+
 def _ledger_next_notes(audit_dir, state, report):
     """Report every legacy LEDGER row whose `next` disagreed with the owner the
     status implies. The column is not carried across: `next` was a second place
@@ -503,17 +573,13 @@ def migrate(project: Path, dry_run=False):
             f"overwrite of live state; move the existing document aside if you truly "
             f"mean to re-convert.")
 
-    doc, report = read_legacy(audit_dir)
-    if doc is not None and not report.defects:
+    state, report = convert(audit_dir)
+    if state is not None:
         try:
-            _validate(doc, str(target))
-            state = _build(doc)
             _ledger_next_notes(audit_dir, state, report)
         except StateError as e:
             report.defect(f"the converted document fails the schema: {e}")
             state = None
-    else:
-        state = None
 
     print(report.render(audit_dir, dry_run))
 

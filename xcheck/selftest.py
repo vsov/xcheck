@@ -24,7 +24,8 @@ from xcheck.util import (
     conf_int, construal_key, is_session_id, load_conf
 )
 from xcheck.md_prose import (
-    FRONTMATTER_RE, LIMIT_KEYS, _DIMENSIONS_RE, _atx_indent_ok, _fm_value,
+    FRONTMATTER_RE, LIMIT_KEYS, _DIMENSIONS_RE, _NORMS_RE, _UNITMAP_RE, _atx_indent_ok,
+    _fm_value,
     _norm_cell, _parse_frontmatter, _section_table, _strip_nonstructure,
     _yaml_absent, section2_canonical_field_values, section2_canonical_fields,
     section2_field_nullable_map
@@ -977,6 +978,10 @@ def selftest():
     # emptied or name the wrong owner (e.g. disputed) with all other checks green.
     _rg_cases = [
         ("stop-triage", ["F-0001"], ["triage needed", "xcheck-triage"]),
+        # A new audit's one hand-over before there is state: it must name the passes the
+        # operator is asked to review AND the command that loads them, or it is a stop
+        # with no move.
+        ("stop-migrate", ["P-01", "P-02"], ["plan ready", "P-01, P-02", "xcheck migrate"]),
         ("stop-needs-human", "F-0001", ["needs-human on F-0001", "human decides"]),
         ("stop-refusal", ("F-0001", "material-missing"), ["refusal on F-0001", "material-missing", "STAYS IN FORCE"]),
         ("stop-construal", ("Remediator", "finding F-0001", "audit/construals/k.md", "it is `proposed`"),
@@ -3029,7 +3034,7 @@ def selftest():
     #     stripped line == needle, so a header commented out of the document
     #     (`<!-- ## How to verify the fix -->`) or surviving only mid-paragraph is caught
     #     (round-4/8);
-    #   * a ("table", heading_re, cols) tuple is a TABLE HEADER — the section named by
+    #   * a ("table", heading_re, cols, name) tuple is a TABLE HEADER — the section named by
     #     heading_re must hold a GFM table (`_section_table`, the whole-table form declared
     #     for F-0112) whose header cells EQUAL cols by whole-cell normalized equality
     #     (`_norm_cell`), NOT a substring, so the dimensions header commented out of the
@@ -3039,14 +3044,20 @@ def selftest():
     # AUDIT §5 limit values are NOT needles — compared against the XCHECK.md §10 parsed
     # defaults below; the coverage polarity is the separate COVERED/NOT-COVERED check;
     # frontmatter fields are the parsed-schema check further down.
+    # All three catalog tables, because `xcheck migrate` finds every column by its header
+    # name: a template that showed only the dimensions header left a Planner to guess the
+    # other two, and a real one named the unit column `id`, so its plan did not load.
     _DIM_COLS = ["key", "what it catches", "norm source"]
+    _NORM_COLS = ["id", "source", "scope"]
+    _UNIT_COLS = ["unit", "material", "approx. size", "responsibility"]
+    _AUDIT_TABLES = [("table", _NORMS_RE, _NORM_COLS, "norms catalog"),
+                     ("table", _DIMENSIONS_RE, _DIM_COLS, "dimensions"),
+                     ("table", _UNITMAP_RE, _UNIT_COLS, "unit map")]
     _REQ_TEMPLATES = {
         "AUDIT-code.md": ["## 1. Norms catalog", "## 2. Dimensions", "## 3. Unit map",
-                          "## 4. Pass queue", "## 5. Limits",
-                          ("table", _DIMENSIONS_RE, _DIM_COLS)],
+                          "## 4. Pass queue", "## 5. Limits", *_AUDIT_TABLES],
         "AUDIT-text.md": ["## 1. Norms catalog", "## 2. Dimensions", "## 3. Unit map",
-                          "## 4. Pass queue", "## 5. Limits",
-                          ("table", _DIMENSIONS_RE, _DIM_COLS)],
+                          "## 4. Pass queue", "## 5. Limits", *_AUDIT_TABLES],
         "finding.md": ["## Evidence", "## Why this is a defect", "## How to verify the fix",
                        "## Validation", "## Refusal", "## Objection", "## Remediation",
                        "## Admitted scope", "### Covers", "### Does not cover",
@@ -3220,13 +3231,13 @@ def selftest():
                         # equality — NOT a substring — so the dimensions header commented out of
                         # the document (`<!-- | key | what it catches | norm source | -->`) is
                         # not a table row and is caught (F-0130 round-8 reopen).
-                        _t, heading_re, cols = n
+                        _t, heading_re, cols, name = n
                         header, _rows = _section_table(text, heading_re)
                         got = [_norm_cell(c) for c in header] if header else None
                         want = [_norm_cell(c) for c in cols]
                         if got != want:
                             problems.append(
-                                f"{fname}: dimensions table header {got!r} != required {cols!r}")
+                                f"{fname}: {name} table header {got!r} != required {cols!r}")
                     else:
                         # No silent substring fallback (F-0130 round-8 human ruling): an
                         # unclassified structural needle is a LOUD failure, not `n not in text`.
@@ -3346,6 +3357,10 @@ def selftest():
             mut130_tablehdr = _mut_templates(td, "AUDIT-text.md",
                                              [("| key | what it catches | norm source |",
                                                "<!-- | key | what it catches | norm source | -->")])
+        with tempfile.TemporaryDirectory() as td:  # the unit map's key column named `id`, as a real Planner wrote it when the template showed no header — `xcheck migrate` then refused the plan
+            mut130_unitcol = _mut_templates(td, "AUDIT-code.md",
+                                            [("| unit | material | approx. size | responsibility |",
+                                              "| id | material | approx. size | responsibility |")])
         with tempfile.TemporaryDirectory() as td:  # a section HEADING surviving only inside a paragraph — no standalone ATX line (round-8 ruling poison)
             mut130_headprose = _mut_templates(td, "finding.md",
                                               [("## Objection", "See ## Objection note inline")])
@@ -3393,6 +3408,7 @@ def selftest():
               and any("finding.md" in p and "duplicate key 'status'" in p for p in mut130_dup)
               and any("finding.md" in p and "bad-form field 'unit'" in p for p in mut130_badform)
               and any("AUDIT-text.md" in p and "dimensions table header" in p for p in mut130_tablehdr)
+              and any("AUDIT-code.md" in p and "unit map table header" in p for p in mut130_unitcol)
               and any("finding.md" in p and "section header" in p and "Objection" in p for p in mut130_headprose)
               and any("finding.md" in p and "section header" in p and "How to verify the fix" in p for p in mut130_headfence)
               and any("AUDIT-text.md" in p and "dimensions table header" in p for p in mut130_tablefence)
@@ -3401,8 +3417,8 @@ def selftest():
               and any("finding.md" in p and "section header" in p and "Verification" in p for p in mut130_fenceclose)
               and any("AUDIT-text.md" in p and "dimensions table header" in p for p in mut130_tablecomment)
               and any("finding.md" in p and "section header" in p and "How to verify the fix" in p for p in mut130_headcomment))
-        print(f"{'PASS' if ok else 'FAIL'}: the seven shipped templates/ files carry the required sections, fields and tables as ORDINARY MARKDOWN LINES — a LINE-BASED drift check, NOT a CommonMark parser (F-0130 §8 rule 5 exception): it does NOT detect structure hidden inside raw HTML (`<div>...`) or other embeddings, and targets ACCIDENTAL drift in our own templates (a renamed/missing section, a dropped/wrong field, a corrupted plain-Markdown table), not deliberate obfuscation of them. Within that scope, section headings are matched as real ATX lines and table headers as whole pipe-table header cells (`_section_table` cells EQUAL the declared columns, not a substring — NO `n not in text` branch survives for structural content, F-0130 round-8), every raw-line structural recognizer reading them through the ONE CommonMark leading-indent rule (`_atx_indent_ok`: 0-3 leading spaces is a heading/table/fence, 4+ columns is indented code) with NON-RENDERED blocks — fenced code blocks AND HTML comment blocks — stripped FIRST by the ONE `_strip_nonstructure` (fence delimiters CommonMark-exact — a closing fence is a same-char run of >= length followed ONLY by whitespace, so a ```not-a-close interior line does not end the block; an HTML comment block opens on a `<!--` line and ends on the first `-->` line, a MID-LINE `<!-- ... -->` span — even one running across lines — is blanked with its visible prefix kept (F-0153 reopen), mutually exclusive with fences) so a ```-fenced, 4-column-indented, OR `<!-- ... -->`-commented EXAMPLE/copy of a heading/table is not read as document structure (F-0130 round-9/10/11); the three templates whose record lives in state.json (construal/pass/plan) must carry NO frontmatter block — a typed one looks recorded and is read by nothing — while the finding/CF frontmatter KEY SET is checked EXACTLY (missing AND extra → reject) against CANONICAL_SCHEMA (finding.md carries the full §2 record incl blocked/norm-ruling, class-finding.md the full schema incl members + the CF-only `created-by` provenance field), with NO duplicate singleton key AND NO bad-form field (the parser's own dup + badform signals, not a second judgement); fixed-default §2 VALUES (status=reported, attempts=0, the null defaults) are checked against the §2 record; and AUDIT-*.md §5 limits are checked against the XCHECK.md §10 defaults table, reading ONLY the §5 body with HTML comments stripped — so a stripped OR html-commented `## How to verify the fix`, a collapsed COVERED polarity, an `id` deleted from frontmatter (even with a body decoy), a non-canonical `future-field` added, blocked/norm-ruling renamed out of the CF, a flipped `status: reported`->`closed`, a deleted nullable `class:`, a corrupted `max_findings_per_pass` default (even with a decoy `15` hidden in a comment), two contradicting `status:` singletons that last-wins-collapse to a canonical record, a §2-undeclared `unit: {{a: b}}` flow-mapping form that parses to a mangled value under a canonical key, a dimensions table header commented out of the document (`<!-- | key | ... | -->`, byte sequence surviving in prose), a section heading surviving only inside a paragraph, a real section heading wrapped in a ```-fenced code block, a real dimensions table header+delimiter wrapped in a ```-fenced code block, a real heading indented 4 columns into code (`    ## ...`), a real heading hidden behind a fence whose ```not-a-close interior run fails to close it, a real dimensions table header+delimiter wrapped in a multi-line HTML comment, and a real section heading wrapped in a multi-line HTML comment are each caught — while a heading with 0-3 leading and trailing spaces stays accepted (F-0130)"
-              + ("" if ok else f" -> clean={clean130} sec={mut130_sec} html={mut130_html} cov={mut130_cov} fm={mut130_fm} cf={mut130_cf} val={mut130_val} del={mut130_del} lim={mut130_lim} extra={mut130_extra} limdecoy={mut130_limdecoy} dup={mut130_dup} badform={mut130_badform} tablehdr={mut130_tablehdr} headprose={mut130_headprose} headfence={mut130_headfence} tablefence={mut130_tablefence} headindent={mut130_headindent} headok={mut130_headok} fenceclose={mut130_fenceclose} tablecomment={mut130_tablecomment} headcomment={mut130_headcomment}"))
+        print(f"{'PASS' if ok else 'FAIL'}: the seven shipped templates/ files carry the required sections, fields and tables as ORDINARY MARKDOWN LINES — a LINE-BASED drift check, NOT a CommonMark parser (F-0130 §8 rule 5 exception): it does NOT detect structure hidden inside raw HTML (`<div>...`) or other embeddings, and targets ACCIDENTAL drift in our own templates (a renamed/missing section, a dropped/wrong field, a corrupted plain-Markdown table), not deliberate obfuscation of them. Within that scope, section headings are matched as real ATX lines and table headers as whole pipe-table header cells (`_section_table` cells EQUAL the declared columns, not a substring — NO `n not in text` branch survives for structural content, F-0130 round-8), every raw-line structural recognizer reading them through the ONE CommonMark leading-indent rule (`_atx_indent_ok`: 0-3 leading spaces is a heading/table/fence, 4+ columns is indented code) with NON-RENDERED blocks — fenced code blocks AND HTML comment blocks — stripped FIRST by the ONE `_strip_nonstructure` (fence delimiters CommonMark-exact — a closing fence is a same-char run of >= length followed ONLY by whitespace, so a ```not-a-close interior line does not end the block; an HTML comment block opens on a `<!--` line and ends on the first `-->` line, a MID-LINE `<!-- ... -->` span — even one running across lines — is blanked with its visible prefix kept (F-0153 reopen), mutually exclusive with fences) so a ```-fenced, 4-column-indented, OR `<!-- ... -->`-commented EXAMPLE/copy of a heading/table is not read as document structure (F-0130 round-9/10/11); the three templates whose record lives in state.json (construal/pass/plan) must carry NO frontmatter block — a typed one looks recorded and is read by nothing — while the finding/CF frontmatter KEY SET is checked EXACTLY (missing AND extra → reject) against CANONICAL_SCHEMA (finding.md carries the full §2 record incl blocked/norm-ruling, class-finding.md the full schema incl members + the CF-only `created-by` provenance field), with NO duplicate singleton key AND NO bad-form field (the parser's own dup + badform signals, not a second judgement); fixed-default §2 VALUES (status=reported, attempts=0, the null defaults) are checked against the §2 record; and AUDIT-*.md §5 limits are checked against the XCHECK.md §10 defaults table, reading ONLY the §5 body with HTML comments stripped — so a stripped OR html-commented `## How to verify the fix`, a collapsed COVERED polarity, an `id` deleted from frontmatter (even with a body decoy), a non-canonical `future-field` added, blocked/norm-ruling renamed out of the CF, a flipped `status: reported`->`closed`, a deleted nullable `class:`, a corrupted `max_findings_per_pass` default (even with a decoy `15` hidden in a comment), two contradicting `status:` singletons that last-wins-collapse to a canonical record, a §2-undeclared `unit: {{a: b}}` flow-mapping form that parses to a mangled value under a canonical key, a dimensions table header commented out of the document (`<!-- | key | ... | -->`, byte sequence surviving in prose), a unit map header whose `unit` column is named `id`, a section heading surviving only inside a paragraph, a real section heading wrapped in a ```-fenced code block, a real dimensions table header+delimiter wrapped in a ```-fenced code block, a real heading indented 4 columns into code (`    ## ...`), a real heading hidden behind a fence whose ```not-a-close interior run fails to close it, a real dimensions table header+delimiter wrapped in a multi-line HTML comment, and a real section heading wrapped in a multi-line HTML comment are each caught — while a heading with 0-3 leading and trailing spaces stays accepted (F-0130)"
+              + ("" if ok else f" -> clean={clean130} sec={mut130_sec} html={mut130_html} cov={mut130_cov} fm={mut130_fm} cf={mut130_cf} val={mut130_val} del={mut130_del} lim={mut130_lim} extra={mut130_extra} limdecoy={mut130_limdecoy} dup={mut130_dup} badform={mut130_badform} tablehdr={mut130_tablehdr} unitcol={mut130_unitcol} headprose={mut130_headprose} headfence={mut130_headfence} tablefence={mut130_tablefence} headindent={mut130_headindent} headok={mut130_headok} fenceclose={mut130_fenceclose} tablecomment={mut130_tablecomment} headcomment={mut130_headcomment}"))
         failed += 0 if ok else 1
 
         # F-0127: install.sh promises (README §5.2) an idempotent upgrade that refreshes
@@ -3450,8 +3466,8 @@ def selftest():
             _sh50.copytree(_rp50_root / "templates", mrepo / "templates")
             ish = mrepo / "install.sh"
             ish.write_text(ish.read_text(encoding="utf-8").replace(
-                '[ -f "$TARGET/audit/AUDIT.md" ] || cp templates/AUDIT-text.md',
-                'cp templates/AUDIT-text.md'), encoding="utf-8")
+                'if [ ! -f "$TARGET/audit/AUDIT.md" ]; then',
+                'if true; then'), encoding="utf-8")
             mut127 = _install_preserves(mrepo)
         ok = (clean127 == [] and any("AUDIT.md" in p and "preserved" in p for p in mut127))
         print(f"{'PASS' if ok else 'FAIL'}: re-running install.sh preserves audit state byte-for-byte and refreshes XCHECK.md+templates; an inverted AUDIT.md guard is caught (F-0127)"

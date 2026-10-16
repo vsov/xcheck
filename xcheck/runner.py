@@ -2624,7 +2624,9 @@ def run_session(project: Path, conf, role, charter, dry_run=False, lock=None, co
                 # still there and the prompt still names it. The envelope records
                 # `unknown`, the difference between "briefed with this" and "we do not
                 # know".
-                print(f"  ! context capsule not generated ({e}); the session reads the "
+                why = (e if os.path.lexists(project / "audit" / "state.json")
+                       else "no state.json until the plan is migrated")
+                print(f"  ! context capsule not generated ({why}); the session reads the "
                       f"full corpus instead")
         child_prompt = prompt + (capsule_line(session_id) if capsule_digest else "") \
             + orchestration_context(orch, session_id)
