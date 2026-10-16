@@ -34,7 +34,8 @@ import time
 import unittest
 from pathlib import Path
 
-from tests.harness import needs_live_corpus, REPO, Fixture, finding_record, state_doc, xcheck_submodule
+from tests.harness import (HAVE_LIVE_CORPUS, needs_live_corpus, REPO, Fixture, finding_record,
+                           state_doc, xcheck_submodule)
 
 envelope = xcheck_submodule("envelope")
 ledger = xcheck_submodule("ledger")
@@ -545,7 +546,12 @@ if __name__ == "__main__":
     unittest.main()
 
 
-@needs_live_corpus
+# Gated per METHOD, not per class. Until PR #2 the decorator sat on this class, and of
+# its five tests only the historical-stream one reads the corpus: the other four run on
+# temp fixtures or scan the package's own source. In the exported tree, and so on the
+# public repository's CI, all five skipped. The first change to name the stream in a
+# new place (`migrate.not_fresh_install`) reached GitHub with this boundary check
+# disarmed, and only the development tree could see it.
 class OneValidatedReadBoundary(unittest.TestCase):
     """PHASE 5 (fifth audit). `validate()` was strict and `envelope.read_events()` was a
     plain `json.loads` loop — and the loop was the reader every consumer above the stream
@@ -573,6 +579,8 @@ class OneValidatedReadBoundary(unittest.TestCase):
         ("ledger.py", "events_path"): "the boundary itself",
         ("ledger.py", "truncation_problem"): "the boundary itself",
         ("ledger.py", "validate"): "the boundary itself",
+        ("migrate.py", "not_fresh_install"): "counts state_transition events — through "
+                                             "ledger.read_stream; the name is message text",
         ("runner.py", "_event_prefix_problem"): "bytes: append-only vs the sandbox seed",
         ("selftest.py", "selftest"): "bytes: the append-only drill",
     }
@@ -706,6 +714,7 @@ class OneValidatedReadBoundary(unittest.TestCase):
         print(f"  REPAIR     a fixed stream reads again: "
               f"{len(ledger.read_stream(fx.root))} events")
 
+    @needs_live_corpus
     def test_the_real_historical_stream_reads_clean_through_the_boundary(self):
         events = ledger.read_stream(REPO)
         print(f"\n  REAL       {len(events)} events validated; sha256 "
@@ -716,7 +725,7 @@ class OneValidatedReadBoundary(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.real_digest = digest(REAL_STREAM)
+        cls.real_digest = digest(REAL_STREAM) if HAVE_LIVE_CORPUS else None
 
 
 @needs_live_corpus
