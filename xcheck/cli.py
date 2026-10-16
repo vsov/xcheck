@@ -511,9 +511,9 @@ def cmd_next(project: Path, conf, dry_run, assume_yes=False):
         # (`pre_state_decision`); every other project decides from its state.
         pre = pre_state_decision(project, conf)
         if pre is None:
-            _state, unchecked, checked, kind, detail = state_and_decision(project, conf)
+            _state, unchecked, _checked, kind, detail = state_and_decision(project, conf)
         else:
-            (kind, detail, _report), _state, unchecked, checked = pre, None, [], []
+            (kind, detail, _report), _state, unchecked, _checked = pre, None, [], []
         if kind.startswith("stop-") or kind.startswith("done"):
             # Phase 9: a gate is the most consequential thing the cycle does — it hands
             # control to a human — so it is the one outcome a machine reader most needs
