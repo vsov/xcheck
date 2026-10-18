@@ -173,8 +173,10 @@ class TheOtherTwoGatesAreNamedToo(unittest.TestCase):
             for g in users:
                 if f"@{g}(" in src:
                     users[g].append(f.name)
-        self.assertEqual(["test_benchmark_harness.py", "test_metrics.py",
-                          "test_model_routing.py"],
+        # 0.9.6: test_capsule_contract grades XCHECK.md against the corpus's installed
+        # copy, audit/XCHECK.md, which the export does not carry.
+        self.assertEqual(["test_benchmark_harness.py", "test_capsule_contract.py",
+                          "test_metrics.py", "test_model_routing.py"],
                          sorted(users["needs_repo_file"]))
         self.assertEqual(["test_hardening.py"], sorted(users["needs_commit"]))
         for g, mods in sorted(users.items()):
