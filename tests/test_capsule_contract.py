@@ -14,8 +14,8 @@ import textwrap
 import unittest
 from pathlib import Path
 
-from tests.harness import (CATALOGS, REPO, Fixture, finding_record, queue_pass, state_doc,
-                           xcheck_submodule)
+from tests.harness import (CATALOGS, REPO, Fixture, finding_record, needs_repo_file, queue_pass,
+                           state_doc, xcheck_submodule)
 from tests.test_parallel_retry import two_pass_doc
 
 capsule = xcheck_submodule("capsule")
@@ -189,6 +189,7 @@ class TheReadingOrderAgrees(unittest.TestCase):
                               if "AUDIT.md" in ln and "not AUDIT.md" not in ln], text)
         self.assertIn("context capsule", text)
 
+    @needs_repo_file("audit/XCHECK.md", "the development corpus's installed copy; audit/ is not exported")
     def test_the_installed_copy_is_the_source(self):
         self.assertEqual((REPO / "XCHECK.md").read_bytes(),
                          (REPO / "audit" / "XCHECK.md").read_bytes())
