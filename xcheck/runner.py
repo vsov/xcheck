@@ -772,11 +772,24 @@ _DIGEST_REF = re.compile(r"^(?P<name>[^@]+)@(?P<algo>[A-Za-z0-9][A-Za-z0-9+._-]*
                          r":(?P<hex>[^@:]*)$")
 
 
+# 0.9.6: a LOCAL build has no registry digest. Its content-addressed image ID,
+# `sha256:<64 hex>`, names its bytes and every engine runs it as a reference.
+# `name@sha256:<ID>` does not: the Linux engine reads the digest as a REPOSITORY digest
+# and tries to pull — green on OrbStack, red on the first GitHub runner that ran it.
+_IMAGE_ID = re.compile(r"^sha256:[0-9a-f]{64}$")
+
+
 def unpinned_reason(image):
     """Why `image` is not pinned to bytes, or None when it is."""
     image = (image or "").strip()
     if not image:
         return "it is empty"
+    if _IMAGE_ID.match(image):
+        return None
+    if image.startswith("sha256:"):
+        return (f"it is a local image ID of {len(image) - 7} character(s), not the 64 "
+                f"lowercase hex characters of the full ID — a short ID can name a "
+                f"different image tomorrow")
     m = _DIGEST_REF.match(image)
     if not m:
         return ("it names no digest at all — it is a mutable reference, and what it "
@@ -816,7 +829,9 @@ def container_image_ref(conf):
             f"  This profile's containment was MEASURED against a specific image. A "
             f"reference that can resolve to different bytes tomorrow makes that "
             f"measurement a statement about an image nobody can name.\n"
-            f"  Resolve the tag to a digest and set the result:\n"
+            f"  For a local build, set its full image ID (`docker image inspect -f "
+            f"'{{{{.Id}}}}' <image>`, a bare `sha256:<64 hex>`). For a registry image, "
+            f"resolve the tag to a digest and set the result:\n"
             f"    docker pull {image}\n"
             f"    docker inspect --format='{{{{index .RepoDigests 0}}}}' {image}\n"
             f"  Or, deliberately and at a stated cost, set "

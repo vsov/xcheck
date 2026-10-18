@@ -7,7 +7,7 @@ said "PIN IT BY DIGEST" in a comment. A comment is not a gate.
 
 Three things are proved here, and they are deliberately separate:
 
-* **The refusal fires**, on five shapes of unpinned reference, each named.
+* **The refusal fires**, on six shapes of unpinned reference, each named; a full local image ID is a pin.
 * **The waiver reaches the LOG.** Criterion 2 is specifically not about console output:
   a console scrolls away, and the operator who has to know the guarantee was dropped is
   reading the log file a month later. `run_child` opens the log with `"w"`, which
@@ -45,7 +45,7 @@ _SKIPPED = []
 PINNED = util.CONTAINER_IMAGE
 DIGEST = PINNED.split("@", 1)[1]                  # sha256:<64 hex>, the real one
 
-# The five shapes that are not a pin. Each is a (label, reference, expected phrase).
+# The six shapes that are not a pin. Each is a (label, reference, expected phrase).
 UNPINNED = [
     ("a bare tag", "alpine/git:latest", "names no digest at all"),
     ("no tag at all", "alpine/git", "names no digest at all"),
@@ -53,6 +53,7 @@ UNPINNED = [
     ("wrong length", "alpine/git@sha256:abc123", "not the 64 lowercase hex"),
     ("upper-cased hex", "alpine/git@sha256:" + "AB" * 32, "not the 64 lowercase hex"),
     ("a digest on a tag", "alpine/git:3.19@" + DIGEST, "BOTH a tag"),
+    ("a short local image ID", "sha256:" + "ab" * 6, "local image ID of 12"),
 ]
 
 # A fake `docker` that runs the entrypoint on the host. It exists so the waiver-in-log
@@ -98,7 +99,7 @@ class ThePinIsEnforced(unittest.TestCase):
         self.assertIn("unsafe_allow_unpinned_image=on", msg,
                       "an operator who has decided must be told the one way through")
 
-    def test_the_five_unpinned_shapes_each_refuse_by_name(self):
+    def test_the_six_unpinned_shapes_each_refuse_by_name(self):
         for label, ref, phrase in UNPINNED:
             with self.subTest(shape=label):
                 conf = complete_conf(sandbox_profile="container", container_image=ref)
@@ -116,6 +117,19 @@ class ThePinIsEnforced(unittest.TestCase):
         registry on earth, and the operator's fix would be to waive the pin — the
         gate would have argued them out of the guarantee it exists to keep."""
         ref = f"registry.example.com:5000/team/img@{DIGEST}"
+        self.assertIsNone(runner.unpinned_reason(ref), ref)
+        image, waiver = runner.container_image_ref(
+            complete_conf(sandbox_profile="container", container_image=ref))
+        self.assertEqual(ref, image)
+        self.assertIsNone(waiver)
+
+    def test_a_full_local_image_id_is_a_pin(self):
+        """A local build has no registry digest; its content-addressed ID names its bytes.
+
+        `name@sha256:<ID>` is not equivalent: the Linux engine reads that digest as a
+        REPOSITORY digest and tries to pull, which is how the 0.9.6 codex battery went
+        green on OrbStack and red on its first GitHub runner."""
+        ref = "sha256:" + DIGEST.split(":", 1)[1]
         self.assertIsNone(runner.unpinned_reason(ref), ref)
         image, waiver = runner.container_image_ref(
             complete_conf(sandbox_profile="container", container_image=ref))

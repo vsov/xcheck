@@ -27,12 +27,15 @@ Until that runs, the usage shape is **NOT VERIFIED** against a paid session.
    `sha256:20fbca67a4ab164523d440e2472d1f9313e8dc782e2e9911b30a2aa077d5aa4a`. The apt layer
    is not byte-reproducible across days, so pin **your** build's ID, not this one.
 
+   Set the bare ID, `sha256:<64 hex>`. Do not write `xcheck-codex@sha256:<ID>`: the Linux
+   engine reads a digest after a name as a registry digest and tries to pull it.
+
 2. **Write the operator profile.** The profile lives outside the audited repository. The
    commented block in `docs/operator.conf.example` is this:
 
    ```
    sandbox_profile=container
-   container_image=xcheck-codex@sha256:<your build's ID>
+   container_image=sha256:<your build's full ID>
    telemetry_adapter=codex-stream
    env_allowlist=OPENAI_API_KEY
    egress_allowlist=api.openai.com

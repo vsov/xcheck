@@ -37,7 +37,7 @@ def setUpModule():
                         str(REPO / "images" / "fake-codex")],
                        capture_output=True, text=True, timeout=600)
     if p.returncode == 0:
-        IMAGE["ref"] = f"xcheck-fake-codex@{p.stdout.strip()}"
+        IMAGE["ref"] = p.stdout.strip()            # the full local image ID
 
 
 def tearDownModule():

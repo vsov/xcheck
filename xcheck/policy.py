@@ -822,7 +822,8 @@ lease_ttl=300
 # and bounded CPU/memory/PIDs. It needs a working docker and REFUSES without one — it
 # never degrades to a weaker profile.
 # container_image: what the session runs in. PINNED BY DIGEST, and enforced rather than
-# recommended: an image without an `@sha256:<64 hex>` digest is refused at the door. A
+# recommended: an image without an `@sha256:<64 hex>` digest (or, for a local build, its
+# full `sha256:<64 hex>` image ID) is refused at the door. A
 # mutable tag means the image that held the recorded escape matrix is not necessarily
 # the image that runs tomorrow. The shipped default has sh, git and busybox — enough for
 # the escape probes and a read-only session, but NOT python3 and NOT any agent CLI.
@@ -830,7 +831,9 @@ lease_ttl=300
 # these together, pinning YOUR build's ID (`docker image inspect -f '{{.Id}}'
 # xcheck-codex`). The release build of 2026-10-17 was
 #   sha256:20fbca67a4ab164523d440e2472d1f9313e8dc782e2e9911b30a2aa077d5aa4a
-#   container_image=xcheck-codex@sha256:<your build's ID>
+#   container_image=sha256:<your build's full ID>
+# The bare ID, not `xcheck-codex@sha256:<ID>`: a local build has no registry digest, and
+# the Linux engine reads `name@<digest>` as one and tries to pull it.
 #   telemetry_adapter=codex-stream
 #   env_allowlist=OPENAI_API_KEY
 #   egress_allowlist=api.openai.com

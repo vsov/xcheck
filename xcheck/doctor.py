@@ -161,7 +161,8 @@ def check_image_pinned(conf, project):
         return Result("image-pinned", SKIP,
                       "no container profile selected, so no image is pulled", "")
     remedy = ("Pin the image by digest: `docker pull <image>` then "
-              "`container_image=repo/name@sha256:<64 hex>`")
+              "`container_image=repo/name@sha256:<64 hex>`; for a local build, its "
+              "full ID `container_image=sha256:<64 hex>`")
     try:
         image, waiver = runner.container_image_ref(conf)
     except SystemExit as e:
