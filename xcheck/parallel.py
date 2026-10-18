@@ -717,12 +717,24 @@ def run_passes(project, conf, pass_ids, session, announce=print, assume_yes=Fals
     # The ceilings come BEFORE the announcement, because the announcement reads like a
     # commitment and this is the last point at which nothing has been spent.
     workers = refuse_oversized_run(conf, pass_ids, assume_yes, stdin, announce)
+    # 0.9.6 (P1b): the payer's admission ceiling, once for the whole batch and under the
+    # caller's lock — N reservations at the boundary, never N checks of one remaining.
+    from xcheck import budget
+    from xcheck.envelope import read_events
+    results = []
+    admitted, refused = budget.admit(conf, read_events(project), len(pass_ids))
+    if refused:
+        announce(f"parallel: {budget.gate_message(budget.ADMISSION, refused)}")
+        for pid in pass_ids[admitted:]:
+            results.append((pid, 0, budget.CeilingRefused(refused["why"])))
+        pass_ids = list(pass_ids[:admitted])
+        if not pass_ids:
+            return results
     base = state.state_revision
     announce(f"parallel: {len(pass_ids)} passes with disjoint unit sets "
              f"({', '.join(pass_ids)}), at most {workers} in flight at once, "
              f"all computed against state revision {base}")
 
-    results = []
     with _futures.ThreadPoolExecutor(max_workers=workers) as pool:
         futures = {pool.submit(session, pid): pid for pid in pass_ids}
         for done in _futures.as_completed(futures):
@@ -800,8 +812,9 @@ def agent_pass(project, conf, pass_ids, live=(), announce=print):
     from xcheck.runner import (PROMPTS, Sandbox, child_environment, dispatch_route,
                                prepare_launch, prepare_logs, require_trust,
                                finish_session, resolve_profile, result_problem,
-                               run_child)
-    from xcheck.state import git_head
+                               run_child, settle)
+    from xcheck.runner import _material, capsule_line, prepare_capsule
+    from xcheck.state import controller_commit, git_head
     from xcheck.util import serialized
 
     project = Path(project)
@@ -828,6 +841,13 @@ def agent_pass(project, conf, pass_ids, live=(), announce=print):
         require_trust(conf, "Auditor", profile)
         session_id = os.urandom(8).hex()
         child_env = child_environment(conf, {"XCHECK_SESSION_ID": session_id})
+        # 0.9.6 (F5): the same capsule the sequential path writes for this pass — built
+        # from the pass id, exactly as a sequential dispatch of it is, so the two carry
+        # the same contract. Under the merge window: it reads state and writes audit/.
+        with serialized():
+            capsule_digest = prepare_capsule(project, "Auditor", pid, session_id)
+        if capsule_digest:
+            prompt += capsule_line(session_id)
         # PHASE 5 (sixth audit). Three shared functions, in the order the sequential
         # dispatcher calls them: the operator's log root (this path used to hardcode
         # `audit/orchestrator-logs`), the route at the door (this path used to resolve
@@ -841,20 +861,28 @@ def agent_pass(project, conf, pass_ids, live=(), announce=print):
         cmd = plan.cmd
         logs.mkdir(parents=True, exist_ok=True)
         with serialized():
+            head_before = git_head(project)
             rec = envelope.dispatch_record(
                 cmd, "Auditor", charter, prompt, session_id, profile,
-                envelope.current_revision(project), head_before=git_head(project),
+                envelope.current_revision(project), head_before=head_before,
                 env=child_env, conf=conf, concurrent_group=group,
+                # 0.9.6 (F4): the same provenance the sequential path records, from the
+                # same functions — these were all `unknown` on a parallel pass.
+                subject_commit=head_before, subject_manifest=_material(project),
+                controller_commit=controller_commit(), capsule_digest=capsule_digest,
                 # PHASE 5 (sixth audit): the ROUTE is recorded here, not by `finish` —
                 # which is why a parallel pass's envelope named no route at all and
                 # every metric aggregating by route silently excluded it.
-                route=route)
+                route=route,
+                # 0.9.6 (F3): the pass id, not the charter text — which also names the
+                # pass's reserved finding-id block, none of which this pass was given.
+                charter_targets=[pid])
             envelope.make_sidecar_dir(log_path)
             live_ids.add(session_id)
             envelope.store(project, rec, event="session_dispatched", live=live_ids)
-        rc, outcome, elapsed = 1, "crash", 0.0
         sandbox = Sandbox(project, profile, f"Auditor-{pid}", logs, conf=conf)
-        try:
+
+        def run():
             sandbox.enter()
             launch = sandbox.wrap(cmd, conf, child_env)
             rc, outcome, elapsed = run_child(
@@ -876,8 +904,9 @@ def agent_pass(project, conf, pass_ids, live=(), announce=print):
                 outcome = "refused"
             announce(f"parallel: pass {pid} finished — {outcome} "
                      f"(exit={rc}, {elapsed / 60:.1f} min)")
-            if outcome != "ok":
-                return None
+            return rc, outcome, elapsed
+
+        def on_ok():
             # ONE question to git, two answers derived from it: what the session may
             # change, and what it made. Asking twice is how the courier's authorization
             # bypass survived — the gate read one derivation and the patch carried
@@ -891,12 +920,13 @@ def agent_pass(project, conf, pass_ids, live=(), announce=print):
                     f"reports; it does not edit the material it is auditing.")
             mutate = harvest(base_state, load_state(sandbox.workdir / "audit"), pid,
                              reserved[pid])
-            # Staged BEFORE the `finally` runs, because the `finally` is what deletes
-            # the only other copy. This line is the phase-8 fix in one place.
+            # Staged before teardown, because teardown is what deletes the only other
+            # copy. This line is the phase-8 fix in one place.
             return mutate, stage_artifacts(sandbox.workdir, sandbox.base, pid, changed)
-        finally:
-            # The envelope is closed on EVERY path, including the refusal above: an
-            # open dispatch that nobody finished is what the next run reports as an
+
+        def finish(rc, outcome, elapsed, note, stop=None, stop_refusals=()):
+            # The envelope is closed on EVERY path, including a refusal: an open
+            # dispatch that nobody finished is what the next run reports as an
             # abandoned session, and this one was not abandoned, it was answered.
             with serialized():
                 # PHASE 5 (sixth audit): the same telemetry fields the sequential path
@@ -908,8 +938,21 @@ def agent_pass(project, conf, pass_ids, live=(), announce=print):
                                finish_session(conf, rec, rc, outcome, elapsed,
                                               git_head(project), log_path,
                                               sandbox_seed=getattr(sandbox, "base", None),
-                                              planned_model=planned_model, route=route),
+                                              planned_model=planned_model, route=route,
+                                              note=note, stop=stop,
+                                              stop_refusals=stop_refusals),
                                event="session_finished", live=live_ids)
-            sandbox.leave()
+
+        # 0.9.6 (F1/F2): the SAME settle the sequential path uses. A non-`ok` pass used
+        # to return before anything captured its work, and its sandbox was then deleted;
+        # now it is quarantined like a sequential session, before teardown.
+        _rc, _outcome, _elapsed, produced, _bundle, error = settle(
+            sandbox, run, on_ok=on_ok, finish=finish, window=serialized,
+            quarantine=lambda label: sandbox.quarantine(
+                label, session_id=session_id, head_at_capture=rec.get("head_before"),
+                charter=charter, role="Auditor"))
+        if error is not None:
+            announce(f"parallel: pass {pid} failed after it ran — {error}")
+        return produced
 
     return session

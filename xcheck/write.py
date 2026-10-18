@@ -95,8 +95,9 @@ VERBS = {
         "planned -> fixed, recording WHICH session did it (§7 provenance)"),
     "record-verdict": Verb(
         ("ID",), {"--verdict": "closed|reopened", "--session": "16-HEX",
-                  "--reason": "TEXT"}, ("--verdict", "--session"),
-        "the Verifier's binding act on a fixed finding; enforces verifier != fixer"),
+                  "--reason": "TEXT", "--evidence": "manual:TEXT"}, ("--verdict", "--session"),
+        "the Verifier's binding act on a fixed finding; enforces verifier != fixer; "
+        "`closed` needs an oracle result or --evidence manual:"),
     "admit-construal": Verb(
         ("KEY",), {"--admitter": "human:LABEL|16-HEX"}, ("--admitter",),
         "§4 rule 9 admission; enforces producer != admitter"),
@@ -856,7 +857,7 @@ def _record_fix(doc, state, args):
     return f"{fid}: planned -> fixed by session {session}{unbound}"
 
 
-def _record_verdict(doc, state, args):
+def _record_verdict(doc, state, args, project):
     fid, verdict, session = args["id"], args["--verdict"], args["--session"]
     # `--reason` was in this verb's grammar from the start and was READ BY NOTHING: an
     # operator could type it, the command would succeed, and the reason went nowhere.
@@ -882,12 +883,14 @@ def _record_verdict(doc, state, args):
             f"verdict on it (§7: the Verifier is a DIFFERENT session from the fixer). "
             f"An agent grading its own work is the independence this whole cycle exists "
             f"to buy.")
-    rec["status"] = verdict
     # Phase 9: how independent this verdict actually was, measured from the two
     # envelopes rather than inferred from "the ids differ". A degraded level is
     # STORED and PRINTED, never quietly treated as if it were cross-provider.
     level = independence_level(session_by_id(state, fixer), session_by_id(state, session),
                                fixer_id=fixer, verifier_id=session)
+    evidence = _closing_evidence(rec, verdict, args, project, level) if verdict == "closed" \
+        else {}
+    rec["status"] = verdict
     rec["independence"] = level
     msg = (f"{fid}: fixed -> {verdict} by session {session}{unbound}\n"
            f"  independence: {level} — {independence_note(level)}")
@@ -912,7 +915,58 @@ def _record_verdict(doc, state, args):
     # `reopen_cause` counts these. `unrecorded` is written out rather than omitted:
     # a reopen with no stated cause is a fact about the run, and a metric that
     # silently dropped those cases would report a tidier picture than the evidence.
-    return msg, {"verdict": verdict, "reason": reason or "unrecorded"}
+    if evidence.get("evidence_manual"):
+        msg += f"\n  evidence: MANUAL — {evidence['evidence_manual']} (not an oracle result)"
+    elif evidence:
+        msg += f"\n  evidence: oracle {evidence['oracle_digest'][:12]} defect-absent on " \
+               f"{evidence['snapshot'][:12]}, defect-present on earlier material"
+    return msg, {"verdict": verdict, "reason": reason or "unrecorded", **evidence}
+
+
+def _closing_evidence(rec, verdict, args, project, level):
+    """What a `closed` verdict rests on, or the refusal naming every missing piece.
+
+    0.9.6 (F6). A status move is not evidence. `closed` now needs either an oracle
+    result (`oracle.closing_problems` lists what is missing, one sentence each) or the
+    explicit `--evidence manual:<what was checked>`, which is recorded and labelled
+    manual everywhere the level is shown — the route for text audits and for findings
+    filed before oracles existed."""
+    from xcheck import oracle as oracle_mod
+    from xcheck.envelope import read_events
+    from xcheck.state import material_identity
+    fid = rec["id"]
+    manual = args.get("--evidence")
+    if manual is not None:
+        why = manual[len("manual:"):].strip() if manual.startswith("manual:") else ""
+        if not why:
+            raise StateError("--evidence must be `manual:<what was checked, and how>` — "
+                             "an empty manual claim is no evidence at all.")
+        return {"evidence_manual": why}
+    body = Path(project) / "audit" / (rec.get("body_path") or "")
+    try:
+        text = body.read_text(encoding="utf-8")
+    except OSError as e:
+        raise StateError(f"{fid}: its body {rec.get('body_path')} cannot be read ({e}), "
+                         f"so its oracle cannot be checked.")
+    orc, why = oracle_mod.read_block(text)
+    if orc is None:
+        raise StateError(
+            f"`record-verdict {fid} --verdict closed` needs evidence: "
+            + (f"its ## Oracle block is refused ({why})" if why else
+               f"{fid} carries no ## Oracle block")
+            + f". Give `--evidence manual:\"<what was checked>\"` (recorded as MANUAL), "
+              f"or add an oracle and run `xcheck run-oracle {fid}` before and after the fix.")
+    snapshot, swhy = material_identity(project)
+    if snapshot is None:
+        raise StateError(f"{fid}: the current material has no identity ({swhy}), so no "
+                         f"oracle run can be matched to it.")
+    digest = oracle_mod.block_digest(orc, project)
+    problems = oracle_mod.closing_problems(read_events(project), fid, digest, snapshot,
+                                           level)
+    if problems:
+        raise StateError(f"`record-verdict {fid} --verdict closed` is refused:\n  - "
+                         + "\n  - ".join(problems))
+    return {"oracle_digest": digest, "snapshot": snapshot}
 
 
 def _admit_construal(doc, state, args):
@@ -1449,9 +1503,18 @@ def _amend_pass(doc, state, args):
 
     changed = []
     for opt, field in fields.items():
-        if opt in given:
+        if opt in given and q[field] != given[opt]:
             changed.append(f"{field}: {q[field]!r} -> {given[opt]!r}")
             q[field] = given[opt]
+    # 0.9.6 (F3): an amendment that restates the pass is refused, not recorded. It used to
+    # emit a transition on the pass, and a transition lifts a claimed stop — so the same
+    # charter was dispatched again under the name "amended". The operator's way to say
+    # "dispatch it unchanged" is `xcheck resolve-stop`, which says that in the record.
+    if not changed:
+        raise StateError(
+            f"`amend-pass {pid}` changed nothing: every value given equals the pass as it "
+            f"stands. To dispatch a stopped pass again unchanged, record why with `xcheck "
+            f"resolve-stop {pid} --resolution \"<what changed>\"`.")
     return f"pass {pid} amended — " + "; ".join(changed)
 
 
@@ -1567,7 +1630,7 @@ def _catalog_values(given):
 
 
 # The verbs whose validation needs the tree, not only the document.
-_PROJECT_VERBS = frozenset({"file-finding"})
+_PROJECT_VERBS = frozenset({"file-finding", "record-verdict"})
 
 _VERB_FN = {
     "set-status": _set_status,

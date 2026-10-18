@@ -17,7 +17,8 @@ verifier_cmd=codex exec --sandbox workspace-write {prompt}
 # under sandbox_profile=container. Under `none` it is refused outright.
 remediator_cmd=claude -p {prompt}
 # telemetry_adapter: which provider's usage shape the wrapper above hands back —
-# `codex` or `fake`. There is NO DEFAULT and none is guessed from the role command: a
+# `codex`, `codex-stream` (the parent reads `codex exec --json`'s own event stream; the
+# one that works under `container`, docs/codex-provider.md) or `fake`. There is NO DEFAULT and none is guessed from the role command: a
 # command named `codex` may be a wrapper, a proxy or a shim, and inferring a provider from
 # a program name is deciding something the operator did not say. Unset means sessions
 # record no provider figure, which is the honest answer for an unconfigured machine.
@@ -107,6 +108,17 @@ lease_ttl=300
 # mutable tag means the image that held the recorded escape matrix is not necessarily
 # the image that runs tomorrow. The shipped default has sh, git and busybox — enough for
 # the escape probes and a read-only session, but NOT python3 and NOT any agent CLI.
+# THE CONTAINED CODEX PATH (docs/codex-provider.md) — build `images/codex`, then set
+# these together, pinning YOUR build's ID (`docker image inspect -f '{{.Id}}'
+# xcheck-codex`). The release build of 2026-10-17 was
+#   sha256:20fbca67a4ab164523d440e2472d1f9313e8dc782e2e9911b30a2aa077d5aa4a
+#   container_image=xcheck-codex@sha256:<your build's ID>
+#   telemetry_adapter=codex-stream
+#   env_allowlist=OPENAI_API_KEY
+#   egress_allowlist=api.openai.com
+#   auditor_cmd=codex exec --json --ephemeral --skip-git-repo-check -s workspace-write {prompt}
+# No `{sidecar}` under `container`: it names a host path no mount reaches, and the launch
+# refuses it.
 container_image=alpine/git@sha256:3b44767883ac77bddae0160cc27b6b039345e23fa3504f4159efaa32264ab57f
 # unsafe_allow_unpinned_image: the escape hatch, named for what it costs. `on` permits
 # an unpinned image and WRITES THE WAIVER INTO THE RUN'S LOG. It is about PINNING ONLY:

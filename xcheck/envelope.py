@@ -37,7 +37,7 @@ from pathlib import Path
 
 from xcheck import ledger, provider
 from xcheck.ledger import OUTBOX_FILENAME  # noqa: F401  (re-export)
-from xcheck.state import StateError, freeze, load_state, write_state
+from xcheck.state import MANIFEST_SCHEME, StateError, freeze, load_state, write_state
 from xcheck.util import serialized
 from xcheck.util import (DEGRADED_INDEPENDENCE, INDEPENDENCE_LEVELS,  # noqa: F401 re-export
                          TELEMETRY_SOURCES)
@@ -196,7 +196,7 @@ def dispatch_record(cmd, role, charter, prompt, session_id, profile, state_revis
                     head_before, env=None, conf=None, verified=None,
                     concurrent_group=None, subject_commit=None, subject_manifest=None,
                     controller_commit=None, capsule_digest=None,
-                    trust_level=None, route=None):
+                    trust_level=None, route=None, charter_targets=None):
     """The envelope as it stands BEFORE the child runs: everything already known.
 
     `exit_status`/`head_after`/`duration_s`/`log_digest`/`outcome` are `None` here and
@@ -232,6 +232,9 @@ def dispatch_record(cmd, role, charter, prompt, session_id, profile, state_revis
         # worktree does not exist yet when this record is written.
         "subject_commit": subject_commit or UNKNOWN,
         "subject_manifest": subject_manifest or UNKNOWN,
+        # 0.9.6 (F4): which rule computed it. Absent on an `unknown` digest and on every
+        # record before 0.9.6, which is scheme 1 and not comparable with this one.
+        **({"subject_manifest_scheme": MANIFEST_SCHEME} if subject_manifest else {}),
         "controller_commit": controller_commit or UNKNOWN,
         # PHASE 13: the context this session was actually given, by content.
         "capsule_digest": capsule_digest or UNKNOWN,
@@ -260,6 +263,13 @@ def dispatch_record(cmd, role, charter, prompt, session_id, profile, state_revis
         # a field that is always there stops meaning anything, and `route: strong` on
         # every pre-phase-14 session would be a claim nobody made.
         **({"route": route} if route else {}),
+        # 0.9.6 (F3): the record ids this session was GIVEN, fixed at dispatch. A stop is
+        # bound against these and nothing else — a stop naming another pass is refused,
+        # where it used to halt that pass. The dispatcher supplies them from its decision
+        # (`dispatch_targets`), never from the charter text a parallel pass is handed,
+        # which also names its reserved finding-id block.
+        **({"charter_targets": sorted(charter_targets)} if charter_targets is not None
+           else {}),
     }
 
 
@@ -280,7 +290,7 @@ def provider_claim(log_path, session_id, adapter=None):
 
 def finish(rec, rc, outcome, duration_s, head_after, log_path, sandbox_seed=None,
            first_output_s=None, idle_s=None, note=None, first_activity_s=None,
-           adapter=None, planned_model=None, route=None):
+           adapter=None, planned_model=None, route=None, stop=None, stop_refusals=()):
     rec = dict(rec)
     if sandbox_seed:
         # The DISPOSABLE commit the child actually ran against, labelled as such by the
@@ -307,6 +317,17 @@ def finish(rec, rc, outcome, duration_s, head_after, log_path, sandbox_seed=None
     # headline total — but it is now the provider's total when there is one, so the
     # figure and its provenance travel together instead of the provenance being implied
     # by a regex nobody can see from the record.
+    # 0.9.6 (F3): the stop arrives from the session's stop FILE (`read_stop_file`, read
+    # by `runner.settle` before teardown) — never from the log, where a quoted line in a
+    # file the session printed was indistinguishable from the session's own. Bound here
+    # to the targets the dispatch recorded.
+    bound, unbound = bind_stop(stop, rec.get("charter_targets"), rec.get("role"))
+    if bound:
+        rec["stop"] = bound
+    stop_bad = list(stop_refusals) + unbound
+    if stop_bad:
+        # Recorded, not swallowed — the same rule as `telemetry_refused`.
+        note = "; ".join(filter(None, [note, "stop refused: " + "; ".join(stop_bad)]))
     if note:
         rec["note"] = note
     tele, total = telemetry(log_path, first_output_s=first_output_s, idle_s=idle_s,
@@ -532,6 +553,37 @@ def _read_sidecar(log_path, session_id, log_digest=None):
     return (None, bad) if bad else (got, [])
 
 
+def write_stream_sidecar(log_path, session_id, log_digest=None):
+    """0.9.6 (P1a): the PARENT turns the child's event stream into this session's sidecar.
+
+    For an adapter with `stream=True` the provider's own output IS the session log — the
+    CLI's stdout, captured by this process — so the parent parses its top-level events
+    (`provider.stream_usage`) and writes the sidecar itself, bound to the session and the
+    log's digest like any other. Nothing is mounted and no path is handed to the child.
+    A stream with no usage REMOVES any sidecar already there: under a stream adapter the
+    stream is the only channel, and a file someone else left must not stand in for it.
+
+    Residual, stated: a process inside the container running as the CLI's own uid can
+    write to the CLI's stdout through `/proc/<pid>/fd/1` and so forge a top-level line.
+    `docs/codex-provider.md` names it; the container keeps it off the host."""
+    side = sidecar_path(log_path, session_id)
+    if side is None:
+        return None
+    try:
+        text = Path(log_path).read_text(encoding="utf-8", errors="replace")
+    except (OSError, ValueError):
+        text = ""
+    got = provider.stream_usage(text)
+    if got is None:
+        side.unlink(missing_ok=True)
+        return None
+    make_sidecar_dir(log_path)
+    got = dict(got, session_id=session_id,
+               log_digest=log_digest if log_digest is not None else sha256_file(log_path))
+    side.write_text(json.dumps(got, sort_keys=True), encoding="utf-8")
+    return side
+
+
 def _read_agent_line(log_path):
     """`(usage, refusals)` from the LAST `XCHECK_TELEMETRY` line the child printed.
 
@@ -574,13 +626,24 @@ def telemetry(log_path, first_output_s=None, idle_s=None, session_id=None,
     # derived from total session duration precisely because this figure did not exist,
     # and it can only stop being a conservative guess once runs have recorded it.
     rec["first_activity_s"] = first_activity_s
-    parsed = log_tokens(log_path)
+    stream = bool(getattr(adapter, "stream", False))
+    # 0.9.6 (P1a): under a stream adapter the log is the provider's JSONL, so a `tokens
+    # used` match or an `XCHECK_TELEMETRY` line in it can only be text something ELSE put
+    # there — a nested tool output is escaped inside an event, never a line of its own.
+    # Neither channel is read; the stream is the one measurement.
+    parsed = None if stream else log_tokens(log_path)
     rec["tokens_log"] = parsed
+    if stream:
+        write_stream_sidecar(log_path, session_id, log_digest)
     # The sidecar OUTRANKS the child's own line, and the two are labelled differently.
     # A file the parent's directory holds, bound to this session, is a different kind of
     # evidence from a line the subject printed — which is the whole finding.
     side, side_bad = _read_sidecar(log_path, session_id, log_digest)
     said, said_bad = _read_agent_line(log_path)
+    if stream and (said is not None or said_bad):
+        said, said_bad = None, ["an XCHECK_TELEMETRY line under the stream adapter "
+                                f"`{adapter.name}` is not the provider's output and was "
+                                "ignored"]
     got = side if side is not None else (said or {})
     source_of_object = PROVIDER if side is not None else (
         AGENT_REPORTED if said is not None else None)
@@ -854,10 +917,15 @@ def _abandon(rec, project):
 def _event_payload(rec):
     keep = ("role", "provider", "agent_model", "executable_version", "policy_digest",
             "sandbox_profile", "trust_level", "subject_commit", "subject_manifest",
+            "subject_manifest_scheme",
             "sandbox_seed",
             "controller_commit", "capsule_digest",
             "charter_hash", "prompt_hash", "head_before", "head_after",
-            "duration_s", "exit_status", "outcome", "log_digest", "tokens")
+            "duration_s", "exit_status", "outcome", "log_digest", "tokens",
+            # 0.9.6 (P1b): admission charges a finished session its measured tokens only
+            # when the PROVIDER measured them, so the stream must say who did.
+            "telemetry_source",
+            "stop", "charter_targets")
     return {k: rec[k] for k in keep if rec.get(k) is not None}
 
 
@@ -980,7 +1048,166 @@ PROTOCOL_VIOLATION = "protocol-violation"
 # Enumerated once. A protocol value that is not in here is refused rather than passed
 # along: an unknown answer in this field reaches the loop, the printer and the event
 # stream, none of which have a branch for it.
-PROTOCOLS = frozenset({PROTOCOL_RECORDED, PROTOCOL_NO_PROGRESS, PROTOCOL_VIOLATION})
+# The fourth answer. Nothing moved, and the session SAID why on the stop channel below:
+# it could not execute its charter and stopped rather than working around it. Ouroboros-4
+# had 132 of these among its 136 barren sessions and no field to put them in, so they
+# were `protocol-no-progress` and the same charter was re-dispatched up to 54 times.
+PROTOCOL_STOP_CLAIMED = "stop-claimed"
+
+PROTOCOLS = frozenset({PROTOCOL_RECORDED, PROTOCOL_NO_PROGRESS, PROTOCOL_VIOLATION,
+                       PROTOCOL_STOP_CLAIMED})
+
+# ------------------------------------------------------------------ the stop channel
+#
+# One line the CHILD prints — `XCHECK_STOP {"reason": <§5 code>, "target": <P-NN|F-NNNN>,
+# "detail": <what is missing>}` — read by the parent at `finish`, exactly as the
+# `XCHECK_TELEMETRY` line is. It deliberately does NOT go through a write verb: the case
+# it exists for is the one where every verb refuses (W-08: 130 sessions refused by the
+# orchestrator's own lock while trying to record what they had found), and a stop that
+# can only be recorded through the door that is shut is a stop nobody hears.
+#
+# Read STRICTLY, like `tokens_in_log`: a line the pattern does not recognise is no stop,
+# an unknown reason is refused and recorded as refused, never coerced. Prose that mentions
+# a reason code is not a stop — templates and prompts echo the whole vocabulary into every
+# log, which is why `classify_outcome`'s text signatures could never be trusted at rc==0.
+# `PLAN`: the Planner's charter names no record id, so a Planner stop is bound to the plan.
+STOP_TARGET_PLAN = "PLAN"
+STOP_ID_RE = re.compile(r"^(?:F|CF)-\d{4}$|^P-\d{2,}$|^RP-\d{4}$|^PLAN$")
+# The channel: ONE JSON object the session writes to this path in its own working tree,
+# named to it by `XCHECK_STOP_FILE` and by the prompt. A file is only ever written on
+# purpose, so text the session happened to print — a source file it read, a tool's
+# output, the prompt echoed back — can no longer become a control message. Read and
+# removed by the parent before teardown; it never reaches a patch or a quarantine bundle.
+STOP_FILE = "audit/.xcheck-stop.json"
+# Bounds on what one stop may carry. A stop is one reason, one id and a sentence; a payload
+# past these is not a stop with a long explanation, it is input the parent will not try to
+# interpret — refused as too long rather than silently cut to fit.
+STOP_MAX_BYTES = 4096
+STOP_DETAIL_MAX = 400
+STOP_FIELDS = frozenset({"reason", "target", "detail"})
+
+
+def stop_problems(obj):
+    """`(stop, refusals)` for ONE parsed stop payload — the single validator of its shape.
+
+    Defined for every JSON value. Type is checked BEFORE membership: `[] in a_set` raises
+    TypeError, and an exception here used to abort `finish` with the session record left
+    open and its partial work deleted with the sandbox (F1)."""
+    from xcheck.util import REFUSAL_REASONS
+    if not isinstance(obj, dict):
+        return None, [f"XCHECK_STOP payload is a JSON {type(obj).__name__}, not an object"]
+    bad = []
+    extra = sorted(set(obj) - STOP_FIELDS)
+    if extra:
+        bad.append(f"XCHECK_STOP names fields it does not define: {', '.join(extra)}")
+    reason = obj.get("reason")
+    if not isinstance(reason, str) or reason not in REFUSAL_REASONS:
+        bad.append(f"XCHECK_STOP names reason {reason!r}, which is not one of the §5 "
+                   f"codes ({', '.join(sorted(REFUSAL_REASONS))})")
+    target = obj.get("target")
+    if target is not None and not (isinstance(target, str) and STOP_ID_RE.match(target)):
+        bad.append(f"XCHECK_STOP names target {target!r}, which is not a record id")
+    detail = obj.get("detail")
+    if detail is not None and not isinstance(detail, str):
+        bad.append(f"XCHECK_STOP detail is a JSON {type(detail).__name__}, not text")
+    elif detail is not None and len(detail) > STOP_DETAIL_MAX:
+        bad.append(f"XCHECK_STOP detail is too long ({len(detail)} characters; at most "
+                   f"{STOP_DETAIL_MAX})")
+    if bad:
+        return None, bad
+    stop = {"reason": reason}
+    if target is not None:
+        stop["target"] = target
+    if detail:
+        stop["detail"] = detail
+    return stop, []
+
+
+def stop_in_bytes(data):
+    """`(stop, refusals)` for the bytes of a stop file. Never raises.
+
+    One JSON object, at most STOP_MAX_BYTES. Anything else — not UTF-8, not JSON, two
+    objects, a list, an oversize payload — is a refusal with its reason, not silence: a
+    stop the parent rejected without saying so is a stop the operator never learns was
+    offered."""
+    if not data or not data.strip():
+        return None, ["the stop file is empty"]
+    if len(data) > STOP_MAX_BYTES:
+        return None, [f"the stop file is too long ({len(data)} bytes; at most "
+                      f"{STOP_MAX_BYTES})"]
+    try:
+        obj = json.loads(data.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError) as e:
+        return None, [f"the stop file is not one valid JSON object "
+                      f"({getattr(e, 'msg', None) or e.__class__.__name__})"]
+    return stop_problems(obj)
+
+
+def read_stop_file(workdir):
+    """`(present, stop, refusals)` for the session's stop file, which is REMOVED.
+
+    Removed whether or not it parses: it is a message to the parent, not work, and left
+    in place it would be carried into the project by the patch. A symlink or a directory
+    there is refused as such and never followed."""
+    if not workdir:
+        return False, None, []
+    path = Path(workdir) / STOP_FILE
+    if not os.path.lexists(path):
+        return False, None, []
+    try:
+        if path.is_symlink() or not path.is_file():
+            return True, None, [f"{STOP_FILE} is not a regular file"]
+        return (True, *stop_in_bytes(path.read_bytes()))
+    except OSError as e:
+        return True, None, [f"{STOP_FILE} could not be read ({e.strerror or e})"]
+    finally:
+        try:
+            if path.is_dir() and not path.is_symlink():
+                shutil.rmtree(path)
+            else:
+                path.unlink()
+        except OSError:
+            pass
+
+
+def bind_stop(stop, targets, role):
+    """`(stop, refusals)`: a parsed stop bound to the ids its session was GIVEN.
+
+    A stop naming a target outside `targets` is refused — an Auditor on P-01 used to
+    halt P-02 this way. No target binds to the one target the charter has; with several
+    (or none) it is ambiguous and refused. `targets` None is a record written before
+    dispatches carried them: such a stop cannot be bound, and is refused rather than
+    trusted."""
+    if stop is None:
+        return None, []
+    given = list(targets or [])
+    if targets is None:
+        return None, ["the dispatch recorded no charter targets, so the stop cannot be "
+                      "bound to its charter"]
+    named = stop.get("target")
+    if named is None:
+        if len(given) == 1:
+            return dict(stop, target=given[0]), []
+        return None, [f"the stop names no target and this {role or 'session'}'s charter "
+                      f"has {len(given)} ({', '.join(given) or 'none'}), so it is "
+                      f"ambiguous"]
+    if named not in given:
+        return None, [f"the stop names {named}, which this {role or 'session'} was not "
+                      f"given (its charter targets: {', '.join(given) or 'none'})"]
+    return stop, []
+
+
+def dispatch_targets(role, charter):
+    """The record ids a sequential dispatch is GIVEN: its charter's ids, or `PLAN`.
+
+    For the sequential dispatcher the charter is built by `decision.role_and_charter`
+    from the decision itself and enumerates every id it covers, so reading the ids back
+    from it is reading the decision. The parallel dispatcher passes its pass id directly:
+    its charter text also names the reserved finding-id block."""
+    if role == "Planner":
+        return [STOP_TARGET_PLAN]
+    return sorted(charter_targets(charter))
+
 
 # What each role's charter work LOOKS LIKE in the record — the postcondition a receipt
 # checks for. Verbs a role owns but that are not its charter's point (an Auditor
@@ -1049,8 +1276,13 @@ def receipt(events, session_id, declared=None, role=None, charter=None):
     leaves no trace in the receipt is a bypass nobody will notice.
     """
     declared = declared_verbs() if declared is None else frozenset(declared)
-    moved, minted = [], []
+    moved, minted, stop = [], [], None
     for e in events:
+        if e.get("event") == "session_finished" and e.get("session_id") == session_id:
+            # The stop rides on the session's own finished event (`_event_payload`), so
+            # the receipt reads it from the stream like everything else it answers from.
+            stop = e.get("stop") or stop
+            continue
         if e.get("event") != "state_transition" or e.get("session_id") != session_id:
             continue
         row = {"verb": e.get("verb"), "target": e.get("target"),
@@ -1062,7 +1294,12 @@ def receipt(events, session_id, declared=None, role=None, charter=None):
     satisfying = [r for r in moved
                   if work and (r["verb"] in work["creates"]
                                or (r["verb"] in work["bound"] and r["target"] in ids))]
-    if not moved:
+    if not moved and stop:
+        # Nothing moved, and the session said why. A stop AFTER recorded work is not
+        # this branch: the charter's work moved, the receipt says so, and the stop is
+        # carried for the decision either way.
+        protocol, met = PROTOCOL_STOP_CLAIMED, None
+    elif not moved:
         protocol, met = PROTOCOL_NO_PROGRESS, None
     elif work is None:
         # No role or no charter to bind against — a direct caller, or a stream written
@@ -1087,6 +1324,7 @@ def receipt(events, session_id, declared=None, role=None, charter=None):
         "satisfying": satisfying,
         "postcondition_met": met,
         "protocol": protocol,
+        "stop": stop,
     }
 
 

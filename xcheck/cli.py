@@ -11,6 +11,9 @@ Usage:
   xcheck [--project DIR] dashboard [--json]        read-only: render audit/dashboard.html
   xcheck [--project DIR] unlock [--force]          diagnose a stale lock (--force removes it)
   xcheck [--project DIR] cancel                    ask the running session to stop (orderly)
+  xcheck [--project DIR] resolve-stop ID --resolution TEXT
+                                                   lift a session's claimed stop on ID
+  xcheck [--project DIR] run-oracle F-NNNN         run a finding's ## Oracle (container only)
   xcheck [--project DIR] render-views              rewrite LEDGER.md + frontmatter from state
   xcheck [--project DIR] [--dry-run] migrate       one-shot: legacy Markdown tree -> state.json
   xcheck [--project DIR] [--dry-run] upgrade       refresh the installed core+templates
@@ -93,7 +96,7 @@ from xcheck.runner import (
     material_effect_probe, material_snapshot, orchestrator_source_digest,
     quarantine_bundles, resolve_profile, retry_backoff, retry_decision, run_session
 )
-from xcheck.decision import (metrics_report, pre_state_decision, role_and_charter,
+from xcheck.decision import (CLEARS_STOP, metrics_report, pre_state_decision, role_and_charter,
                              state_and_decision)
 from xcheck import parallel
 
@@ -183,6 +186,10 @@ def cmd_status(project: Path, conf, as_json=False):
           + (f", head {state.head_before[:7]}" if state.head_before else ""))
     print(f"passes: {len(checked)} done, {len(unchecked)} queued {unchecked or ''}")
     print(f"findings: {len(records)} total — " + ", ".join(f"{k}:{v}" for k, v in sorted(counts.items())) or "none")
+    try:
+        print(evidence_lines(state, envelope.read_events(project))[0])
+    except Exception as e:                  # status must not die on its own evidence
+        print(f"evidence levels: NOT READ — the event stream could not be read ({e})")
     # PHASE 12 (third audit). Printed WHETHER OR NOT diff scope is on, because the thing
     # it guards against is the operator who turned it on months ago and forgot: a
     # diff-scoped run never looks at a file nobody has touched, so the age of the last
@@ -203,6 +210,16 @@ def cmd_status(project: Path, conf, as_json=False):
         print(f"budgets: on — {len(armed)} of {len(budget.CEILING_KEYS)} ceiling(s) "
               f"armed" + (f" ({', '.join(f'{k}={v}' for k, v in armed)})" if armed
                           else "; every ceiling is 0, which means off"))
+        # 0.9.6 (P1b): whose ceiling it is, what it guarantees, and the account.
+        owned = budget.operator_ceilings(conf)
+        if owned:
+            print(f"  operator ceiling(s): "
+                  f"{', '.join(f'{k}={v:,}' for k, v in sorted(owned.items()))} — the "
+                  f"subject can only tighten them")
+            led = budget.ledger(conf, envelope.read_events(project))
+            if led is not None:
+                print(f"  admission: {budget.ledger_line(led)}")
+            print(f"  {budget.GUARANTEE}")
         # PHASE 12: whether the statistical half of those ceilings can be believed at all.
         # Printed under `on`, because that is where an operator reads a ceiling and
         # concludes they are protected by it.
@@ -230,6 +247,25 @@ def _status_tail(project, conf, state, kind, detail):
     quarantine, the lock, the sandbox and the decision. A Planner session that failed
     before the plan was migrated is quarantined like any other, and is just as much
     waiting on a human."""
+    # 0.9.6 (F3): the live claimed stops, with who claimed them and the command that
+    # lifts each — the operator's debt, printed whether or not one decides this turn.
+    from xcheck.decision import live_stops
+    from xcheck.util import TERMINAL
+    owed = ({q.id for q in state.queue if not q.done} | {"PLAN"}
+            | {r.id for r in list(state.findings) + list(state.class_findings)
+               if r.status not in TERMINAL})
+    try:
+        stops = live_stops(envelope.read_events(project))
+    except Exception as e:                  # status must not die on its own evidence
+        stops = {}
+        print(f"stops: NOT READ — the event stream could not be read ({e})")
+    for target, s in sorted(stops.items()):
+        if target in owed:
+            detail = f" — {s['detail']}" if s.get("detail") else ""
+            print(f"stop: {target} — `{s['reason']}`{detail}. CLAIMED by the "
+                  f"{s['role'] or '?'} session {s['session_id'] or '?'}, unverified; the "
+                  f"operator lifts it with: xcheck resolve-stop {target} --resolution "
+                  f"\"<what changed>\" (or a write verb that changes {target})")
     bundles = quarantine_bundles(project)
     if bundles:
         # An alarm, not a status line: each of these is a session whose work is sitting
@@ -463,6 +499,13 @@ def _dispatch_with_retry(project, conf, role, charter, dry_run, lock, ckey,
         print(f"retry: {'yes' if retry else 'no'} — {reason}")
         if not retry:
             return rc
+        # 0.9.6 (P1b): a retry is a new dispatch and re-enters admission. The attempt
+        # that just ended is already charged — its reservation, or what the provider
+        # measured — so a ceiling it exhausted refuses the retry here.
+        _k, refused = budget.admit(conf, envelope.read_events(project), 1)
+        if refused:
+            print(f"retry: refused — {budget.gate_message(budget.ADMISSION, refused)}")
+            return rc
         wait = retry_backoff(attempt)
         print(f"retry: waiting {wait}s before attempt {attempt + 2} of {limit + 1}")
         sleep(wait)
@@ -520,7 +563,7 @@ def cmd_next(project: Path, conf, dry_run, assume_yes=False):
             # without re-parsing the prose above.
             envelope.emit(project, "gate_reached", None, gate=kind,
                           detail=_gate_detail(detail))
-            report_gate(kind, detail)
+            report_gate(kind, detail, project)
             return kind
         role, charter = role_and_charter(kind, detail)
         if lock:
@@ -811,7 +854,7 @@ def _class_lines(project=None, state=None):
         return []
 
 
-def report_gate(kind, detail):
+def report_gate(kind, detail, project=None):
     if kind == "stop-triage":
         print(f"gate: triage needed — {len(detail)} findings in reported. Dialogue: $xcheck-triage (Codex) or /xcheck-triage")
         # PHASE 15: the one moment a human is being asked to sort findings is the moment
@@ -841,7 +884,7 @@ def report_gate(kind, detail):
         print(f"gate: norm-ratification on {detail} — a class fix is blocked at the §8 gate; the norm owner (human, NOT Triage) records the winning norm with `xcheck record-ruling {detail if isinstance(detail, str) else '<CF-ID>'} --norm <N1|N1-over-N4> --ruled-by human:<label>` — fail-closed, a `## Norm ruling` note alone does not lift it — then a Remediator resumes")
     elif kind == "stop-refusal":
         _fid, _reason = detail
-        print(f"gate: refusal on {_fid} — reason `{_reason}` (§5). The role accepted this charter and could not execute it; the charter STAYS IN FORCE and the finding's status is unchanged. Read the finding's `## Refusal` section, then remove the obstacle it names (supply the material, resolve the dependency, narrow or reword the charter, rule on the norm conflict) and clear the record with `xcheck record-refusal <ID> --clear` so the same charter is dispatched again — re-running it untouched only replays the same refusal")
+        print(stop_hint(project, _fid, _reason))
     elif kind == "stop-construal":
         _role, _charter, _path, _why = detail
         # 0.9.1 phase 5: three frontmatter fields, hand-set, in a construal file whose
@@ -903,6 +946,11 @@ def report_gate(kind, detail):
               "set `embargo=off` in orchestrator.conf to dispatch it anyway.")
     elif kind == "done":
         print("audit complete: queue empty, all records terminal")
+    elif (kind in budget.GATE_KEY or kind in budget.HARD_GATES) and isinstance(
+            detail, dict) and detail.get("why"):
+        # 0.9.6 (P1b): a budget stop used to print its kind and nothing else — the
+        # figure, the coverage and the key to raise were computed and dropped here.
+        print(f"gate: {kind} — {budget.gate_message(kind, detail)}")
     else:
         print(kind)
 
@@ -930,6 +978,161 @@ def cmd_cancel(project: Path):
           f"verdict. If no orchestrator is running, this request is inert: clear the "
           f"lease with `xcheck unlock` once its heartbeat goes stale.")
     return 0
+
+
+def cmd_resolve_stop(project: Path, argv):
+    """`xcheck resolve-stop <ID> --resolution TEXT` — the operator's answer to a stop.
+
+    0.9.6 (F3). A claimed stop halts its target until something changes what would be
+    dispatched; when the change is outside the state document (material supplied, a
+    dependency resolved, a Planner stop before any state exists) there was no verb to
+    say so, and the CLI's hint named `record-refusal --clear`, which answers `no record`
+    for a pass. This records the answer as a `stop_resolved` event — in the stream,
+    beside the stop it lifts, so the history keeps both — under the audit lock, and only
+    for a stop that is live. Refused inside a session: the agent that claimed a stop does
+    not get to resolve it."""
+    if len(argv) != 3 or argv[1] != "--resolution" or not argv[2].strip():
+        raise SystemExit('usage: xcheck resolve-stop <ID> --resolution "<what changed>"')
+    target, text = argv[0], argv[2].strip()
+    if os.environ.get("XCHECK_SESSION_ID"):
+        raise SystemExit("resolve-stop: refused inside a dispatched session — a stop is "
+                         "resolved by the operator, never by a session")
+    from xcheck.decision import STOP_RESOLVED, live_stops
+    lock = Lock(project / "audit", "resolve-stop")
+    lock.acquire()                      # a live session holds it: refused, by the lock
+    try:
+        stop = live_stops(envelope.read_events(project)).get(target)
+        if stop is None:
+            raise SystemExit(f"resolve-stop: no live stop on {target!r} — nothing to "
+                             f"resolve (`xcheck status` lists the live ones)")
+        if not envelope.emit(project, STOP_RESOLVED, None, target=target, resolution=text,
+                             stop_session=stop["session_id"], stop_role=stop["role"],
+                             stop_reason=stop["reason"]):
+            raise SystemExit(f"resolve-stop: the resolution of {target} was NOT recorded "
+                             f"in the stream (see the note above); the stop stands until "
+                             f"it is. Free space on audit/, then: if the note says the "
+                             f"outbox holds it, `xcheck recover --apply` replays it (the "
+                             f"stop gates `next`, so no dispatch will); if it says LOST, "
+                             f"run this command again")
+    finally:
+        lock.release()
+    print(f"resolved: the stop on {target} (`{stop['reason']}`, claimed by the "
+          f"{stop['role'] or '?'} session {stop['session_id'] or '?'}) — the next `next` "
+          f"may dispatch {target} again")
+    return 0
+
+
+def cmd_run_oracle(project: Path, conf, argv):
+    """`xcheck run-oracle F-NNNN` — run a finding's ## Oracle under containment.
+
+    0.9.6 (F6). The oracle is a command written into a finding, which is repository
+    text; it is never run on the host. Only under the `container` profile — the pinned
+    image, `--network=none` whatever the egress allowlist says, the block's own timeout
+    — on a seeded clone of the material as it stands, and every run is recorded as an
+    `oracle_run` event carrying the oracle's digest and the material's identity."""
+    import subprocess
+    from xcheck import oracle as oracle_mod
+    from xcheck.state import MANIFEST_SCHEME, material_identity
+    if len(argv) != 1:
+        raise SystemExit("usage: xcheck run-oracle F-NNNN")
+    fid = argv[0]
+    st = load_state(project / "audit")
+    rec = next((r for r in list(st.findings) + list(st.class_findings) if r.id == fid), None)
+    if rec is None:
+        raise SystemExit(f"run-oracle: no finding {fid!r} in the state document")
+    try:
+        text = (project / "audit" / rec.body_path).read_text(encoding="utf-8")
+    except OSError as e:
+        raise SystemExit(f"run-oracle: {fid}'s body {rec.body_path} cannot be read ({e})")
+    orc, why = oracle_mod.read_block(text)
+    if orc is None:
+        raise SystemExit(f"run-oracle: {fid} " + (f"has an oracle that is refused: {why}"
+                                                   if why else "carries no ## Oracle block"))
+    profile = resolve_profile(conf, "Verifier")
+    if profile.name != "container":
+        raise SystemExit(
+            f"run-oracle: refused under sandbox_profile={profile.name!r}. An oracle is a "
+            f"command taken from a finding — repository text — and runs only under the "
+            f"`container` profile (pinned image, no network). Nothing was run.")
+    snapshot, swhy = material_identity(project)
+    if snapshot is None:
+        raise SystemExit(f"run-oracle: the material has no identity ({swhy}); a result "
+                         f"that cannot name what it ran on is not recorded")
+    digest = oracle_mod.block_digest(orc, project)
+    run_conf = dict(conf, egress_allowlist="")          # no broker: --network=none
+    from xcheck.runner import Sandbox
+    sandbox = Sandbox(project, profile, "Oracle", conf=run_conf)
+    sandbox.enter()
+    rc, timed_out = None, False
+    try:
+        cmd = sandbox.wrap(list(orc["argv"]), run_conf, {})
+        try:
+            p = subprocess.run(cmd, cwd=str(sandbox.workdir), capture_output=True,
+                               text=True, timeout=orc["timeout_s"])
+            rc, out = p.returncode, (p.stdout + p.stderr).strip()
+        except subprocess.TimeoutExpired:
+            rc, timed_out, out = -9, True, f"timed out after {orc['timeout_s']}s"
+    finally:
+        sandbox.leave()                                  # removes the named container
+    verdict = oracle_mod.verdict(rc, orc["expect_absent_exit"], timed_out)
+    actor = os.environ.get("XCHECK_SESSION_ID") or "operator"
+    if not envelope.emit(project, oracle_mod.EVENT, os.environ.get("XCHECK_SESSION_ID"),
+                         finding=fid, oracle_digest=digest, snapshot=snapshot,
+                         snapshot_scheme=MANIFEST_SCHEME, exit=rc, verdict=verdict,
+                         timed_out=timed_out, actor=actor):
+        raise SystemExit(f"run-oracle: the {verdict} result for {fid} was NOT recorded "
+                         f"(see the note above). Free space on audit/, then: if the note "
+                         f"says the outbox holds it, `xcheck recover --apply` replays it; "
+                         f"if it says LOST, run `xcheck run-oracle {fid}` again")
+    print(f"oracle {fid}: {verdict} (exit {rc}, expect {orc['expect_absent_exit']} for "
+          f"absent) on material {snapshot[:12]}, oracle {digest[:12]}, actor {actor}")
+    if out:
+        print("  | " + "\n  | ".join(out.splitlines()[-10:]))
+    return 0 if verdict != "error" else 1
+
+
+def evidence_lines(state, events):
+    """0.9.6 (F6): the evidence level of every finding past `reported`, one line each,
+    plus the count per level — derived by `oracle.evidence_level` and nothing else."""
+    from xcheck.oracle import LEVELS, evidence_level, events_by_finding
+    rows, counts = [], dict.fromkeys(LEVELS, 0)
+    manual = 0
+    mine = events_by_finding(events)
+    for r in list(state.findings) + list(state.class_findings):
+        level, is_manual = evidence_level(r, mine.get(r.id, ()))
+        counts[level] += 1
+        manual += is_manual
+        if level != "reported":
+            rows.append(f"  {r.id}: {level}{' (MANUAL evidence)' if is_manual else ''}")
+    head = ("evidence levels: " + ", ".join(f"{k} {v}" for k, v in counts.items())
+            + f"; manual {manual} — durable = re-observed only")
+    return [head] + rows
+
+
+def stop_hint(project: Path, target, reason):
+    """The gate line for `stop-refusal`, worded for where the refusal came from."""
+    from xcheck.decision import live_stops
+    try:
+        stop = live_stops(envelope.read_events(project)).get(target) if project else None
+    except Exception:
+        stop = None
+    if stop is None:
+        # A §5 refusal recorded on a finding by `record-refusal`.
+        return (f"gate: refusal on {target} — reason `{reason}` (§5). The role accepted this "
+                f"charter and could not execute it; the charter STAYS IN FORCE and the "
+                f"finding's status is unchanged. Read the finding's `## Refusal` section, "
+                f"then remove the obstacle it names and clear it with `xcheck "
+                f"record-refusal {target} --clear` so the same charter is dispatched again "
+                f"— re-running it untouched only replays the same refusal")
+    detail = f" — {stop['detail']}" if stop.get("detail") else ""
+    kind = "pass" if target.startswith("P-") else None if target == "PLAN" else "finding"
+    lifts = (f"a write verb that changes the {kind} ({', '.join(CLEARS_STOP[kind])})"
+             if kind else "no write verb (a plan may have no state yet)")
+    return (f"gate: refusal on {target} — a STOP, reason `{reason}`{detail}. CLAIMED by "
+            f"the {stop['role'] or '?'} session {stop['session_id'] or '?'}, unverified: "
+            f"read its log before believing it. {target} is not dispatched again until "
+            f"the stop is lifted — by {lifts}, or, once the obstacle is gone, by "
+            f"`xcheck resolve-stop {target} --resolution \"<what changed>\"`")
 
 
 def cmd_unlock(project: Path, force, conf=None):
@@ -1322,7 +1525,8 @@ def cmd_metrics(project: Path, as_json=False):
     # above are the same two numbers by the same definitions; the payload takes them
     # from the report, so a divergence between the human printer and the machine
     # surface is not something this function is able to express.
-    report = metrics_report(state, envelope.read_events(project), independence=indep)
+    events = envelope.read_events(project)
+    report = metrics_report(state, events, independence=indep)
     acc, dur = report["auditor_accuracy_pct"], report["fix_durability_pct"]
 
     if as_json:
@@ -1358,8 +1562,11 @@ def cmd_metrics(project: Path, as_json=False):
     # The eight pre-registered metrics, in the order `docs/ouroboros-4-preregistration.md`
     # numbers them, so a reader can hold the document beside this output.
     print(f"1 auditor accuracy (survived validation): {_pct(acc)}  (target >80)")
-    print(f"2 fix durability (closed first pass):     {_pct(dur)}  "
-          f"(prior {report['fix_durability_baseline_pct']}% — Ouroboros-2)")
+    print(f"2 fix durability (re-observed by oracle): {_pct(dur)}  "
+          f"(prior {report['fix_durability_baseline_pct']}% — Ouroboros-2, measured as "
+          f"'closed first pass': NOT comparable)")
+    for line in evidence_lines(state, events):
+        print(line)
     print(f"3 reopen rate (of findings remediated):   {_pct(report['reopen_rate_pct'])}")
     hi = report["human_interventions"]
     print(f"4 human interventions: {hi['total']} ({hi['gates']} gate stops, "
@@ -1554,7 +1761,7 @@ FLAG_COMMANDS = {
     # elsewhere must be readable as well as runnable — `status` and `lint` on a machine
     # with no exported variable would otherwise be unusable for no security gain.
     "--policy": {"next", "loop", "status", "lint", "metrics", "dashboard", "migrate",
-                 "upgrade", "unlock", "cancel", "okf",
+                 "upgrade", "unlock", "cancel", "okf", "resolve-stop", "run-oracle",
                  "evidence-bundle", "recover", "reconcile", "doctor"} | set(WRITE_VERBS),
 }
 
@@ -1710,13 +1917,13 @@ def main(argv):
         elif a in ("next", "loop", "status", "unlock", "cancel", "lint", "metrics",
                    "dashboard", "migrate", "upgrade", "prune-logs",
                    "okf", "evidence-bundle", "recover", "reconcile",
-                   "doctor") or a in WRITE_VERBS:
+                   "doctor", "resolve-stop", "run-oracle") or a in WRITE_VERBS:
             # F-0019: a second command word must not silently overwrite the
             # first — the declared grammar is one command per invocation.
             if cmd is not None:
                 raise SystemExit(f"multiple commands: {cmd!r} and {a!r} (only one allowed)")
             cmd = a
-        elif cmd in WRITE_VERBS:
+        elif cmd in WRITE_VERBS or cmd in ("resolve-stop", "run-oracle"):
             # Everything after a write verb is that verb's own grammar, parsed by
             # `write.parse` against the verb's declaration. The global loop keeps
             # owning `--project` so `--project DIR set-status …` still works.
@@ -1883,6 +2090,10 @@ def _dispatch(cmd, project, conf, dry_run, step, max_sessions, budget, force,
         cmd_unlock(project, force, conf)
     elif cmd == "cancel":
         return cmd_cancel(project)
+    elif cmd == "resolve-stop":
+        return cmd_resolve_stop(project, verb_argv)
+    elif cmd == "run-oracle":
+        return cmd_run_oracle(project, conf, verb_argv)
     elif cmd == "lint":
         return cmd_lint(project)
     elif cmd == "prune-logs":
@@ -1911,7 +2122,8 @@ def _dispatch(cmd, project, conf, dry_run, step, max_sessions, budget, force,
     else:
         raise SystemExit("no command (next|loop|status|unlock|cancel|lint|metrics|"
                          "dashboard|migrate|upgrade|prune-logs|okf|evidence-bundle|"
-                         "reconcile|recover|doctor|render-views|selftest)")
+                         "reconcile|recover|doctor|render-views|resolve-stop|run-oracle|"
+                         "selftest)")
     return 0
 
 

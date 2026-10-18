@@ -371,6 +371,7 @@ def write_evidence_bundle(project, conf=None, audit_dir=None, now=None,
         "subject-manifest.json": {
             "subject_commit": state_mod.subject_commit(project),
             "subject_manifest": state_mod.subject_manifest(project),
+            "subject_manifest_scheme": state_mod.MANIFEST_SCHEME,
             "generated": stamp,
         },
         "policy.json": _policy_member(st, policy_digest, policy_source),

@@ -30,7 +30,7 @@ import re
 from pathlib import Path
 
 CAPSULE_DIRNAME = "capsules"
-SCHEMA = 2
+SCHEMA = 3
 
 # PHASE 9 (third audit). The boundary, stated in the capsule's own text so the session
 # reads it every time rather than once in a document it was told to consult.
@@ -100,8 +100,27 @@ def _finding_ids(charter):
 VERIFIER = "Verifier"
 
 
-def _finding_row(r, role):
-    row = {"id": r.id, "status": r.status, "severity": r.severity, "title": r.title}
+def _section(path, heading):
+    """The text under `## <heading>…` in a finding body, up to the next `## `, or ''."""
+    try:
+        text = Path(path).read_text(encoding="utf-8")
+    except OSError:
+        return ""
+    m = re.search(rf"(?ms)^## {re.escape(heading)}[^\n]*\n(.*?)(?=^## |\Z)", text)
+    if not m:
+        return ""
+    # The template's own guidance comments are not the Auditor's procedure.
+    return re.sub(r"(?s)<!--.*?-->", "", m.group(1)).strip()
+
+
+def _finding_row(r, role, audit=None):
+    row = {"id": r.id, "status": r.status, "severity": r.severity, "title": r.title,
+           "pass": r.pass_id}
+    # 0.9.6 (F5): the procedure the Verifier is told to run (XCHECK.md §5 rule 3 —
+    # written by the Auditor at creation time). Every role gets it: it is the check, not
+    # the argument, so carrying it costs the Verifier no independence.
+    if audit is not None:
+        row["how_to_verify"] = _section(Path(audit) / (r.body_path or ""), "How to verify")
     for field in ("locator", "source_hash"):
         v = getattr(r, field, None)
         if v:
@@ -127,9 +146,16 @@ def build(state, project, role, charter, sheet=None):
     charter = charter or ""
     passes = _pass_ids(charter)
     named_findings = _finding_ids(charter)
+    records = list(state.findings) + list(state.class_findings)
+    # 0.9.6 (F5): the CONTRACT covers every pass the charter names AND the pass each named
+    # finding came from — a Remediator's charter is a list of findings, and the norms,
+    # stop and dimension it is bound by live on their pass. The findings shown are still
+    # only the ones the charter itself reaches.
+    contract_passes = sorted(set(passes) | {r.pass_id for r in records
+                                            if r.id in named_findings and r.pass_id})
 
     queue = {q.id: q for q in state.queue}
-    entries = [queue[p] for p in passes if p in queue]
+    entries = [queue[p] for p in contract_passes if p in queue]
     dimensions = {d.key: d for d in state.catalogs.dimensions}
     units = {u.id: u for u in state.catalogs.units}
     norms = {n.id: n for n in state.catalogs.norms}
@@ -150,7 +176,6 @@ def build(state, project, role, charter, sheet=None):
             sources.append({"unit": uid, "path": rel,
                             "sha256": _hash_material(project / rel)})
 
-    records = list(state.findings) + list(state.class_findings)
     relevant = [r for r in records
                 if r.id in named_findings or (passes and r.pass_id in passes)]
 
@@ -170,6 +195,11 @@ def build(state, project, role, charter, sheet=None):
         "role": role,
         "charter": charter,
         "passes": passes,
+        # 0.9.6 (F5): each pass's canonical charter, VERBATIM from state — read at build
+        # time, so there is no second copy to edit. The bare `P-01` a sequential dispatch
+        # is handed as its charter was the whole of the contract the session saw.
+        "contracts": [{"pass": q.id, "charter": q.charter, "dimension": q.dimension,
+                       "units": list(q.units or ()), "stop": q.stop} for q in entries],
         "allowed_verbs": verbs,
         "postcondition": {
             "names": work.get("names", ""),
@@ -199,7 +229,8 @@ def build(state, project, role, charter, sheet=None):
         # sessions come to agree because one read the other rather than because both
         # read the material. It gets the finding, its locator and the material, which is
         # what a second look needs.
-        "findings": [_finding_row(r, role) for r in sorted(relevant, key=lambda r: r.id)],
+        "findings": [_finding_row(r, role, project / "audit")
+                     for r in sorted(relevant, key=lambda r: r.id)],
         "limits": dict(state.limits),
         "read_more": {
             "methodology": "audit/XCHECK.md",
@@ -232,6 +263,12 @@ def render_capsule(capsule):
          "",
          capsule["charter"],
          ""]
+    for c in capsule.get("contracts", ()):
+        L += [f"## The contract of {c['pass']} (verbatim from the plan)", "",
+              c["charter"], "",
+              f"- dimension: `{c['dimension']}`; units: "
+              f"{', '.join(f'`{u}`' for u in c['units']) or '—'}",
+              f"- stop: {c['stop']}", ""]
     post = capsule["postcondition"]
     if post.get("names"):
         L += ["## What this session must produce", "",
@@ -283,6 +320,10 @@ def render_capsule(capsule):
               + (f" `{f.get('body_path', '')}` |" if body else "")
               for f in capsule["findings"]]
         L.append("")
+        for f in capsule["findings"]:
+            if f.get("how_to_verify"):
+                L += [f"### How to verify {f['id']} (written by the Auditor)", "",
+                      f["how_to_verify"], ""]
         if not body:
             L += ["The evidence BODIES are deliberately not linked here. This role's "
                   "value is a second, independent look at the material; reading the "

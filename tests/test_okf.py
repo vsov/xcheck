@@ -31,7 +31,7 @@ import sys
 import unittest
 from pathlib import Path
 
-from tests.harness import (needs_live_corpus, 
+from tests.harness import (HAVE_LIVE_CORPUS, needs_live_corpus,
     REPO, Fixture, XCHECK, finding_record, queue_pass, state_doc, xcheck_submodule,
 )
 
@@ -335,7 +335,8 @@ RECORD_TYPES_BEFORE_PHASE_6 = ("observation", "claim", "decision", "constraint",
 RELATIONS_BEFORE_PHASE_6 = ("derived_from", "supersedes", "conflicts_with")
 
 
-@needs_live_corpus
+# Gated per METHOD, not per class: 4 of 5 tests here read the corpus. The rest
+# run on temp fixtures or the package's own source, and must run in the exported tree.
 class TheProjectionReadsTheProductionSchema(unittest.TestCase):
     """PHASE 6 (fourth audit). The projection read `e["id"]` and `e["at"]`; production
     emits `target` and `ts`. Every decision record on the real stream therefore read
@@ -348,6 +349,8 @@ class TheProjectionReadsTheProductionSchema(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
+        if not HAVE_LIVE_CORPUS:
+            return
         envelope = xcheck_submodule("envelope")
         cls.state = state_mod.load_state(REPO / "audit")
         cls.events = envelope.read_events(REPO)
@@ -356,6 +359,7 @@ class TheProjectionReadsTheProductionSchema(unittest.TestCase):
         cls.links = [(r["id"], rel, t) for r in cls.records
                      for rel, ts in r["links"].items() for t in ts]
 
+    @needs_live_corpus
     def test_the_real_stream_carries_target_and_ts_and_not_id_and_at(self):
         rows = [e for e in self.events if e.get("event") == "state_transition"]
         self.assertTrue(rows, "this checkout carries no transition events")
@@ -370,6 +374,7 @@ class TheProjectionReadsTheProductionSchema(unittest.TestCase):
                              f"an event carries {projection_name!r} — the emitter changed "
                              f"and the adapter has not")
 
+    @needs_live_corpus
     def test_a_decision_record_names_its_finding(self):
         decisions = [r for r in self.records if r["type"] == okf.DECISION]
         self.assertTrue(decisions, "the real stream produced no decision records")
@@ -380,6 +385,7 @@ class TheProjectionReadsTheProductionSchema(unittest.TestCase):
             self.assertIsNotNone(rec["finding"])
             self.assertNotEqual(rec["freshness"], rec["source_revision"])
 
+    @needs_live_corpus
     def test_the_real_projection_has_no_dangling_links(self):
         dangling = [l for l in self.links if l[2] not in self.ids]
         by_source = {}
@@ -415,6 +421,7 @@ class TheProjectionReadsTheProductionSchema(unittest.TestCase):
                      and any(getattr(c, "lineno", None) in sites for c in ast.walk(n))]
         self.assertIn("observation_id", enclosing)
 
+    @needs_live_corpus
     def test_claim_and_hypothesis_both_reach_the_same_observation(self):
         """The two consumers of that one constructor, on real records: every finding's
         observation is pointed at by both its claim and, where a hypothesis covers its
@@ -431,7 +438,8 @@ class TheProjectionReadsTheProductionSchema(unittest.TestCase):
         self.assertTrue(hypos, "no hypothesis linked anything")
 
 
-@needs_live_corpus
+# Gated per METHOD, not per class: 1 of 8 tests here read the corpus. The rest
+# run on temp fixtures or the package's own source, and must run in the exported tree.
 class TheVerifierChecksWhatTheBundleSays(unittest.TestCase):
     """Checksums say the bytes are the bytes somebody wrote. They say nothing about
     whether what was written means anything, and that is how a bundle with 133 dangling
@@ -518,6 +526,7 @@ class TheVerifierChecksWhatTheBundleSays(unittest.TestCase):
         self.assertTrue(any("does not say how many records are unanchored" in p
                             for p in okf.verify_bundle(self.fx.root)))
 
+    @needs_live_corpus
     def test_the_real_bundle_verifies_clean(self):
         """The control that matters: the projection of this repository's own state and
         events, written and verified end to end."""
@@ -542,7 +551,8 @@ class TheVocabularyDidNotGrow(unittest.TestCase):
 
 # ------------------------------------------------------ PHASE 9 (fifth audit)
 
-@needs_live_corpus
+# Gated per METHOD, not per class: 6 of 7 tests here read the corpus. The rest
+# run on temp fixtures or the package's own source, and must run in the exported tree.
 class EveryExportedEntityResolvesAgainstOneTable(unittest.TestCase):
     """The audit's finding, on the real corpus: 288 records, 266 links, 0 dangling — and
     13 references in the bundle's PROPOSALS pointing at records nobody exported, with
@@ -557,6 +567,8 @@ class EveryExportedEntityResolvesAgainstOneTable(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
+        if not HAVE_LIVE_CORPUS:
+            return
         envelope = xcheck_submodule("envelope")
         cls.classes = xcheck_submodule("classes")
         cls.state = state_mod.load_state(REPO / "audit")
@@ -577,6 +589,7 @@ class EveryExportedEntityResolvesAgainstOneTable(unittest.TestCase):
         return [(n, f, t) for n, p in enumerate(proposals, 1)
                 for f in okf.PROPOSAL_REFS for t in (p.get(f) or ())]
 
+    @needs_live_corpus
     def test_every_reference_in_every_exported_entity_resolves(self):
         """Criterion 2, counted by kind so the reader can see what was checked."""
         ids = {r["id"] for r in self.records}
@@ -595,6 +608,7 @@ class EveryExportedEntityResolvesAgainstOneTable(unittest.TestCase):
             self.assertIn(target, ids)
         self.assertEqual([], okf.verify_bundle(self.bundle(self.proposals)))
 
+    @needs_live_corpus
     def test_a_planted_dangling_proposal_reference_is_caught_by_name(self):
         """Criterion 3. The plant proves the verifier moved: this exact bundle, with this
         exact reference, returned `[]` before the fix."""
@@ -608,6 +622,7 @@ class EveryExportedEntityResolvesAgainstOneTable(unittest.TestCase):
         self.assertIn("class-candidate", problems[0],
                       "the message does not name the entity carrying the reference")
 
+    @needs_live_corpus
     def test_CONTROL_the_same_bundle_unpoisoned_verifies_clean(self):
         """Criterion 4. Without this the arm above is satisfied by a verifier that
         refuses everything."""
@@ -617,6 +632,7 @@ class EveryExportedEntityResolvesAgainstOneTable(unittest.TestCase):
               f"{problems or 'clean'}")
         self.assertEqual([], problems)
 
+    @needs_live_corpus
     def test_the_proposals_cite_records_rather_than_minting_them(self):
         """The fix the phase asked for, asserted at the source: inventing a record to
         satisfy a reference is how the 133 dangling links happened."""
@@ -659,6 +675,7 @@ class EveryExportedEntityResolvesAgainstOneTable(unittest.TestCase):
         print(f"  STRUCTURAL the referential check lives in {carriers[0]} only, over one "
               f"table, with one caller")
 
+    @needs_live_corpus
     def test_the_manifest_still_covers_every_member(self):
         """Criterion 8. Proposals were already a manifest member; this asserts it rather
         than assuming, and that the checksum is over what is on disk."""
@@ -676,6 +693,7 @@ class EveryExportedEntityResolvesAgainstOneTable(unittest.TestCase):
             print(f"  MANIFEST   {name:<16} rows={meta['rows']:<4} "
                   f"sha256={meta['sha256'][:12]}…")
 
+    @needs_live_corpus
     def test_okf_is_still_proposal_only_and_an_input_to_nothing(self):
         """Criterion 7, re-asserted because this phase changed what a proposal carries."""
         for p in self.proposals:

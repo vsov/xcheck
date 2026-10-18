@@ -266,7 +266,8 @@ class TheArchiveIsNeverWritten(unittest.TestCase):
         self.assertEqual(before, keep.read_bytes())
 
 
-@needs_live_corpus
+# Gated per METHOD, not per class: 1 of 4 tests here read the corpus. The rest
+# run on temp fixtures or the package's own source, and must run in the exported tree.
 class TheExistingTreeIsMeasuredAndMigratedByAVerb(unittest.TestCase):
 
     # The bytes this test used to measure. Phase 21 ran the migration for real, so the
@@ -275,6 +276,7 @@ class TheExistingTreeIsMeasuredAndMigratedByAVerb(unittest.TestCase):
     MIGRATED_FILES = 304
     MIGRATED_BYTES = 106_664_401
 
+    @needs_live_corpus
     def test_the_legacy_directory_is_empty_and_the_manifest_accounts_for_it(self):
         """This test used to measure 106.7 MB sitting in the working tree and assert the
         measurement was non-zero. Phase 21 moved those bytes, so `total > 0` became a

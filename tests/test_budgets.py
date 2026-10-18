@@ -22,7 +22,7 @@ Two rules carried in from earlier runs and asserted here:
 import collections
 import unittest
 
-from tests.harness import needs_live_corpus, REPO, Fixture, state_doc, queue_pass, xcheck_submodule
+from tests.harness import HAVE_LIVE_CORPUS, needs_live_corpus, REPO, Fixture, state_doc, queue_pass, xcheck_submodule
 
 budget = xcheck_submodule("budget")
 state_mod = xcheck_submodule("state")
@@ -147,6 +147,17 @@ def events_already_over():
     return ev
 
 
+def events_admission():
+    """Three PROVIDER-measured sessions of 900,000 that moved state: 2.7M charged, so a
+    3.5M operator ceiling has 0.8M left — less than one 1M reservation (0.9.6, P1b)."""
+    ev = []
+    for i in range(3):
+        sid = f"{i:016d}"
+        ev += [dispatched(sid, f"pass P-{i:02d}"), moved(sid), accepted(sid),
+               dict(finished(sid, 900_000), telemetry_source="provider")]
+    return ev
+
+
 CASES = {
     # PHASE 7 (fifth audit): measured 200,000 against a 100,000 ceiling. The audit's
     # reproduction was the same shape ten times smaller, and it returned `no-verdict`.
@@ -158,6 +169,10 @@ CASES = {
     "stop-charter-repeats": (all_armed(charter_repeat_limit=3),
                              events_repeated_charter),
     "stop-marginal-value": (all_armed(marginal_value_window=8), events_stalled),
+    "stop-ceiling": (all_armed(tokens_per_audit=3_500_000,
+                               operator_ceilings="tokens_per_audit=3500000,"
+                                                 "tokens_per_session=1000000"),
+                     events_admission),
 }
 
 
@@ -406,10 +421,15 @@ GATE_FIELDS = {
     # PHASE 7 (fifth audit): reads the same measured figure the audit gate reads, and
     # reads it as a LOWER BOUND rather than as the input to a mean.
     "stop-known-overrun": [("session_finished", "tokens")],
+    # 0.9.6 (P1b): the admission account. It also reads `telemetry_source`, which no
+    # session in this repository's own stream carries yet — it is written from 0.9.6 on,
+    # and `tests/test_payer_ceiling.py` reads it back from real dispatches.
+    "stop-ceiling": [("session_finished", "tokens"), ("session_dispatched", "session_id")],
 }
 
 
-@needs_live_corpus
+# Gated per METHOD, not per class: 4 of 7 tests here read the corpus. The rest
+# run on temp fixtures or the package's own source, and must run in the exported tree.
 class AGateMustReadTheFieldProductionWrites(unittest.TestCase):
     """PHASE 5 (fourth audit). `charter_attempts` keyed on `charter` — a field the
     envelope has never emitted — so the repeat gate could not fire on any real run, and
@@ -426,6 +446,7 @@ class AGateMustReadTheFieldProductionWrites(unittest.TestCase):
         for e in cls.events:
             cls.by_kind[e.get("event")].append(e)
 
+    @needs_live_corpus
     def test_the_production_stream_has_charter_hash_and_no_charter(self):
         """The audit's figures, reproduced as an assertion rather than quoted."""
         rows = self.by_kind["session_dispatched"]
@@ -439,6 +460,7 @@ class AGateMustReadTheFieldProductionWrites(unittest.TestCase):
                          "an event carrying `charter` would mean the emitter changed")
         self.assertEqual(len(rows), len(with_hash))
 
+    @needs_live_corpus
     def test_the_repeat_counter_runs_on_the_real_stream(self):
         """The census the default has to be argued from, computed on real dispatches.
 
@@ -465,6 +487,7 @@ class AGateMustReadTheFieldProductionWrites(unittest.TestCase):
               f"a limit would never have touched them; the ceiling is a decision about "
               f"the {len(counts) - once} that repeated, up to {worst}")
 
+    @needs_live_corpus
     def test_the_other_gates_run_on_the_real_stream_too(self):
         """`gates()` itself, over 1,043 real events, with each ceiling set from the real
         figure it reads. A gate that cannot fire on this repository's own history is a
@@ -540,6 +563,7 @@ class AGateMustReadTheFieldProductionWrites(unittest.TestCase):
         print("  COUNTERFACT old shape -> 0 attempts, gate silent; "
               "same four in the production shape -> stop-charter-repeats")
 
+    @needs_live_corpus
     def test_every_other_gate_reads_fields_the_real_stream_carries(self):
         """The same audit, run over the other five gates. A field that is declared for a
         gate and appears on ZERO production events of that kind is this defect again."""
@@ -802,17 +826,21 @@ class SessionsAreAttributedToPassesAndCharters(unittest.TestCase):
         print(f"  REPORTED   {unplaced[0][1][:120]}")
 
 
-@needs_live_corpus
+# Gated per METHOD, not per class: 3 of 5 tests here read the corpus. The rest
+# run on temp fixtures or the package's own source, and must run in the exported tree.
 class TheDerivedDefaultsAreReDerived(unittest.TestCase):
     """Criterion 9: a derived number that no longer follows from the data is corrected,
     not kept. `xcheck status` prints these, so they are claims."""
 
     @classmethod
     def setUpClass(cls):
+        if not HAVE_LIVE_CORPUS:
+            return
         envelope = xcheck_submodule("envelope")
         cls.st = state_mod.load_state(REPO / "audit")
         cls.events = envelope.read_events(REPO)
 
+    @needs_live_corpus
     def test_charter_repeat_limit_is_re_derived_against_the_real_charters(self):
         attempts = sorted(budget.charter_attempts(self.events).values(), reverse=True)
         under = sum(1 for v in attempts if v <= 3)
@@ -823,6 +851,7 @@ class TheDerivedDefaultsAreReDerived(unittest.TestCase):
                       "the derivation does not cite the data it was re-checked against")
         self.assertEqual(54, attempts[0], "the cited maximum drifted from the corpus")
 
+    @needs_live_corpus
     def test_tokens_per_pass_is_newly_derivable_and_states_its_coverage(self):
         rows, _ = budget.attribution_report(self.st, self.events)
         real = sorted(r[3] for r in rows if r[2])
@@ -833,6 +862,7 @@ class TheDerivedDefaultsAreReDerived(unittest.TestCase):
         self.assertIn(f"{real[-1]:,}", why)
         self.assertIn("4.4% coverage", why, "a derived figure hides its coverage")
 
+    @needs_live_corpus
     def test_the_barren_share_cannot_be_re_derived_below_the_floor(self):
         """The honest non-answer. Measured barren share is 0.0% here — over 7 of 158
         sessions, which is precisely what the floor exists to refuse to reason from."""

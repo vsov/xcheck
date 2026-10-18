@@ -667,6 +667,10 @@ KNOWN_EVENTS = (
     "session_dispatched", "session_finished", "session_result", "session_receipt",
     "session_abandoned", "state_transition", "write_refused", "lease_acquired",
     "lease_released", "retry_considered", "dispatch_key", "gate_reached",
+    # 0.9.6 (F3): the operator's answer to a claimed stop (`xcheck resolve-stop`).
+    "stop_resolved",
+    # 0.9.6 (F6): an oracle result (`xcheck run-oracle`).
+    "oracle_run",
 )
 
 # Present on every event ever written, and asserted over the real stream.

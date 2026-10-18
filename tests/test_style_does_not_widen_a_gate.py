@@ -333,7 +333,15 @@ COUNTERFACTUALS = [
 # stayed at 0: the section's first paragraph names `orchestrated` BEFORE the first claim.
 # The first run of this gate after the section was written reported 2 unscoped, and the
 # fix was that clause, not a looser gate.
-PRE_RUN_CLAIMS = 211
+# Moved 211 -> 213 on 2026-10-17 (phase 11 of the 0.9.6 pilot-readiness run), same debt
+# paid. CHANGELOG.md went 60 -> 62 and every other document is byte-for-byte the same
+# count; diffed by TEXT, the two new claims are the SAME two-sentence pair the 0.9.2-0.9.5
+# entries each carry verbatim — "The only direct surface is read-only `status`, which
+# dispatches nothing and has no containment claim to make." Two more the first draft made
+# ("the sandbox is left", "One contained Codex path") were reworded, not admitted: the
+# first is teardown and the second names an image recipe, and neither needed the word.
+# Unscoped stayed at 0: the entry opens with the `orchestrated` scoping paragraph.
+PRE_RUN_CLAIMS = 213
 PRE_RUN_UNSCOPED = 0
 PRE_RUN_OFFENDERS = 0
 # 2 -> 0 in the same phase, and DOWNWARD, which is the direction that needs no defence:

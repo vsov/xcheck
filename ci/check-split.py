@@ -190,6 +190,29 @@ EXPECTED_ADDED = {
                     "computes: no agent-reported field enters it",
     "_embargo_scan": "W-04 — one pass over the event stream yielding the generation "
                      "count and the barren attempts per charter",
+    "settle": "0.9.6 (F1/F2) — the one way a dispatched child's sandbox is resolved, for "
+              "both dispatchers: run, apply-or-quarantine before teardown, finish, leave",
+    "SessionNotRecorded": "0.9.6 (F1) — the addressed stop when a session ran but its "
+                          "record could not be written; names where its work is kept",
+    "_material": "0.9.6 (F4) — the scheme-2 material digest for a dispatch record, one call "
+                 "for both dispatchers, printing why when the answer is `unknown`",
+    "prepare_capsule": "0.9.6 (F5) — the capsule step for both dispatchers: build, write, "
+                       "digest, or `unknown` with the reason; the parallel path wrote none",
+    "live_stops": "0.9.6 (F3) — the live claimed stops on every target (pass, finding, "
+                  "PLAN), from `session_finished` events, cleared by a CLEARS_STOP "
+                  "transition on the target or by the operator's `stop_resolved`",
+    "cmd_resolve_stop": "0.9.6 (F3) — `xcheck resolve-stop ID --resolution TEXT`: the "
+                        "operator lifts a claimed stop, recorded as an event beside it",
+    "contained_sidecar_problem": "0.9.6 (P1a) — the launch refuses `{sidecar}` under "
+                                 "`container`, where it names a host path no mount reaches",
+    "image_cli_probe": "0.9.6 (P1a) — `xcheck doctor` asks the pinned image, not the host "
+                       "PATH: `<exe> --version` with no network, PASS only on exit 0",
+    "cmd_run_oracle": "0.9.6 (F6) — `xcheck run-oracle F-NNNN`: a finding's oracle run "
+                      "under the container profile only, recorded as an `oracle_run` event",
+    "evidence_lines": "0.9.6 (F6) — the per-level evidence count `status` and `metrics` "
+                      "print, manual closures counted apart",
+    "stop_hint": "0.9.6 (F3) — the gate line for a refusal, worded for its source, naming "
+                 "the claimant and the exact command that lifts it",
     "embargo_hold": "W-04 — the single predicate the queue report and the frozen-corpus "
                     "counterfactual both run through, so a measured claim is a claim "
                     "about shipped behaviour",
@@ -444,6 +467,9 @@ NEW_MODULES = {
                   "audit/XCHECK.md and audit/AUDIT.md`, and 84,610 bytes behind it; "
                   "deriving the subset a single charter is bound by is work nothing in "
                   "the pre-split file did",
+    "oracle.py": "0.9.6 (F6) — acceptance by result: the `## Oracle` block a finding "
+                 "carries, its verdict, and the evidence level derived from `oracle_run` "
+                 "events; nothing in the pre-split file ran a finding's check at all",
     "retention.py": "phase 14 of the industrial-readiness response — where raw session "
                     "logs live and how they stop accumulating. The monolith wrote them "
                     "into the audited tree and never deleted one; a log root resolved "

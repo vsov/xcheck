@@ -132,7 +132,7 @@ class RecordVerdict(VerbCase):
     def test_a_verdict_from_another_session_closes_the_finding(self):
         fx = self.fixed()
         code, out = fx.run("record-verdict", "F-0001", "--verdict", "closed",
-                           "--session", SESSION_B)
+                           "--session", SESSION_B, "--evidence", "manual:fixture")
         self.assertEqual(code, 0, out)
         self.assertEqual(self.record(fx).status, "closed")
         self.assertMirrored(fx, "F-0001", "status: closed")
@@ -478,7 +478,8 @@ class NoVerbWritesAnywhereElse(unittest.TestCase):
         cases = {
             "set-status": ("F-0001", "accepted"),
             "record-fix": ("F-0002", "--session", SESSION_A),
-            "record-verdict": ("F-0003", "--verdict", "closed", "--session", SESSION_B),
+            "record-verdict": ("F-0003", "--verdict", "closed", "--session", SESSION_B,
+                               "--evidence", "manual:fixture"),
             "admit-construal": (None, "--admitter", "human:operator"),
             # PHASE 9: this verb now validates its locator against the subject commit
             # BEFORE it writes, so the fixture below is `git_init`-ed and these two

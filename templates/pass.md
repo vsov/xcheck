@@ -6,7 +6,8 @@
 
 ## Charter
 <!-- The Auditor creates this file at session start by copying
-     templates/pass.md and pasting the charter from the AUDIT.md queue:
+     templates/pass.md and pasting the pass contract from its context capsule
+     (the queue is machine state in audit/state.json, not AUDIT.md):
      scope + stop conditions (max_findings_per_pass, unit list). -->
 
 ## Coverage
@@ -21,5 +22,5 @@
      "No findings" — that is a valid result. -->
 
 ## Handoff
-<!-- Auditor. Leftover scope → new pass added to the AUDIT.md
-     queue (id here). Observations that are not evidence-grade findings. -->
+<!-- Auditor. Leftover scope → a new pass queued with `xcheck queue-pass`
+     (id here). Observations that are not evidence-grade findings. -->

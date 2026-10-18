@@ -355,6 +355,7 @@ class ProvenanceComesFromTheDispatchRecord(unittest.TestCase):
         fx = Fixture(doc=doc)
         self.addCleanup(shutil.rmtree, fx.root, ignore_errors=True)
         write.run(fx.root, "record-verdict", ["F-0001", "--verdict", "closed",
+                                              "--evidence", "manual:fixture",
                                               "--session", verifier])
         self.assertEqual(state.load_state(fx.audit).finding("F-0001").independence,
                          "cross-provider")
@@ -412,7 +413,8 @@ if __name__ == "__main__":
 ledger = xcheck_submodule("ledger")
 
 
-@needs_live_corpus
+# Gated per METHOD, not per class: 1 of 8 tests here read the corpus. The rest
+# run on temp fixtures or the package's own source, and must run in the exported tree.
 class EventsFailClosed(unittest.TestCase):
     """PHASE 7 (fourth audit). `emit` caught `OSError`, printed a note and returned, so a
     canonical transition could land while its event was dropped. Every consumer above the
@@ -595,6 +597,7 @@ class EventsFailClosed(unittest.TestCase):
                 self.assertIn(needle, text, f"{path.name} does not answer {needle!r}")
         print("  TRADE-OFF  answered in ledger.py and at the changed line in envelope.py")
 
+    @needs_live_corpus
     def test_the_real_event_stream_is_untouched(self):
         """Nothing in this phase rewrites already-admitted evidence."""
         events = envelope.read_events(REPO)
@@ -604,7 +607,8 @@ class EventsFailClosed(unittest.TestCase):
         print(f"  UNTOUCHED  {len(events)} real events, no outbox in this checkout")
 
 
-@needs_live_corpus
+# Gated per METHOD, not per class: 10 of 11 tests here read the corpus. The rest
+# run on temp fixtures or the package's own source, and must run in the exported tree.
 class TheStreamIsAChain(unittest.TestCase):
     """PHASE 8 (fourth audit). Checksums at export prove a copy did not change after it
     was copied. They say nothing about whether the source was complete or historically
@@ -637,6 +641,7 @@ class TheStreamIsAChain(unittest.TestCase):
 
     # ---- the real stream ----------------------------------------------------------
 
+    @needs_live_corpus
     def test_the_real_stream_validates_and_the_cost_is_measured(self):
         """CONTROL, and the number that decides whether anyone leaves this on."""
         start = time.perf_counter()
@@ -651,6 +656,7 @@ class TheStreamIsAChain(unittest.TestCase):
         self.assertLess(elapsed, 2.0, "a validating reader nobody can afford gets "
                                       "turned off")
 
+    @needs_live_corpus
     def test_history_is_not_rewritten(self):
         """Every historical event stays byte-identical. The chain starts AFTER them and
         fixes them by naming their digest, which is the only way to add integrity to
@@ -662,6 +668,7 @@ class TheStreamIsAChain(unittest.TestCase):
                          "a historical event grew a chain field — history was rewritten")
         print(f"  UNTOUCHED  {len(rows)} historical events carry no `v` and no `prev`")
 
+    @needs_live_corpus
     def test_the_migration_point_is_declared_once_by_the_data(self):
         """The first line carrying a schema version, and nothing else. Not a date, not a
         count, not a constant somebody has to keep current."""
@@ -677,6 +684,7 @@ class TheStreamIsAChain(unittest.TestCase):
 
     # ---- counterfactuals -----------------------------------------------------------
 
+    @needs_live_corpus
     def test_an_edit_in_the_middle_of_the_chain_is_detected_at_the_edit(self):
         path = self.chained_stream(extra=6)
         lines = path.read_text(encoding="utf-8").splitlines()
@@ -698,6 +706,7 @@ class TheStreamIsAChain(unittest.TestCase):
         self.assertLess(broke, len(lines),
                         "the break was reported at the end of the file, not at the edit")
 
+    @needs_live_corpus
     def test_an_edit_in_the_LEGACY_prefix_is_detected_by_the_first_chained_event(self):
         """The property that makes 1,043 unchained events evidence rather than a file."""
         path = self.chained_stream()
@@ -715,6 +724,7 @@ class TheStreamIsAChain(unittest.TestCase):
                          "the first chained event did not notice the prefix moving")
         print("  PREFIX EDIT line 500 changed; the first chained event (1044) refuses")
 
+    @needs_live_corpus
     def test_truncation_and_tampering_produce_DIFFERENT_refusals(self):
         """Two plants must be proved different. A truncated stream is a machine that
         died and may be recoverable; a tampered one is a person who edited. The
@@ -771,6 +781,7 @@ class TheStreamIsAChain(unittest.TestCase):
         print(f"  TRUNCATED  {truncated.splitlines()[0][:130]}")
         print(f"  TAMPERED   {tampered.splitlines()[0][:130]}")
 
+    @needs_live_corpus
     def test_a_wholesale_forgery_is_caught_by_the_anchor(self):
         """A chain that only checks itself is a chain an attacker can rebuild. This
         replaces the stream with one that is INTERNALLY PERFECT and still fails."""
@@ -792,6 +803,7 @@ class TheStreamIsAChain(unittest.TestCase):
         print("  FORGERY    the rebuilt stream validates, and the anchor refuses it:")
         print(f"             {problem.splitlines()[0][:140]}")
 
+    @needs_live_corpus
     def test_an_unknown_event_kind_is_refused_by_line_and_not_skipped(self):
         path = self.chained_stream(extra=1)
         rows = path.read_text(encoding="utf-8").splitlines()
@@ -805,6 +817,7 @@ class TheStreamIsAChain(unittest.TestCase):
         self.assertIn(f":{len(rows)}:", str(caught.exception))
         print(f"  UNKNOWN    {str(caught.exception).splitlines()[0][:140]}")
 
+    @needs_live_corpus
     def test_a_missing_required_field_is_refused_by_line(self):
         path = self.chained_stream(extra=1)
         rows = path.read_text(encoding="utf-8").splitlines()
@@ -827,6 +840,7 @@ class TheStreamIsAChain(unittest.TestCase):
         self.assertIsNone(ledger.truncation_problem(self.fx.root, anchor))
         print(f"  ANCHORED   {anchor}")
 
+    @needs_live_corpus
     def test_there_is_exactly_one_schema_version_and_a_mechanism_for_a_second(self):
         """The mechanism is owed; a second version is not. A reader that guessed at an
         unknown version would be reading a format it has never seen as if it were this

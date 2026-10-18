@@ -21,4 +21,4 @@ cycle and a deferred import is the honest way to break it.
 # from their files rather than restating the number. Before phase 10 three of them
 # disagreed (XCHECK.md 0.3.0, manifests 0.7.1, git tags v0.3.0) and nothing noticed;
 # the test, not the bump, is what stops that recurring.
-__version__ = "0.9.5"
+__version__ = "0.9.6"

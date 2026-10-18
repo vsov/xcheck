@@ -399,6 +399,14 @@ def outcome_fixture(confirmed=0, durable=0, reported=0, tokens=(), durations=())
     events = [{"event": "session_finished", "session_id": f"{i:016d}",
                **({"tokens": t} if t is not None else {})}
               for i, t in enumerate(tokens)]
+    # 0.9.6 (F6): a durable fix is one an oracle RE-OBSERVED on newer material, so each
+    # durable record gets its closure and a later defect-absent run — by construction.
+    for i in range(durable):
+        fid = f"F-{confirmed + i + 1:04d}"
+        events += [{"event": "state_transition", "target": fid, "verb": "record-verdict",
+                    "verdict": "closed", "snapshot": "s-closed"},
+                   {"event": "oracle_run", "finding": fid, "verdict": "defect-absent",
+                    "snapshot": "s-later", "oracle_digest": "o"}]
     return fx, state_mod.load_state(fx.audit), events
 
 
@@ -408,7 +416,8 @@ RATES = {"input_per_million": 3.0, "output_per_million": 15.0, "currency": "USD"
                               "cache_per_million": 0.3}}}
 
 
-@needs_live_corpus
+# Gated per METHOD, not per class: 1 of 9 tests here read the corpus. The rest
+# run on temp fixtures or the package's own source, and must run in the exported tree.
 class FourMetricsPerUsefulOutcome(unittest.TestCase):
     """The audit's economics finding. `docs/ab-model-routing.md` asked for a 30% TOKEN
     reduction and put latency under "deliberately not measured" — so a cheap model that
@@ -569,6 +578,7 @@ class FourMetricsPerUsefulOutcome(unittest.TestCase):
         self.assertIsNone(r["value"], "review time was derived from a duration")
         self.assertIn("recorded, never derived", r["caption"])
 
+    @needs_live_corpus
     def test_the_real_corpus_refuses_every_per_outcome_figure(self):
         """Not a fixture. This repository has 0 closures and 0 validations, so the four
         must refuse — and the table of zeroes this replaces would have read as a cheap,
@@ -922,37 +932,32 @@ class WallClockIsTheAuditsOwnSpan(unittest.TestCase):
         self.assertIn("NOT elapsed time", wc["caption"])
 
 
-class DurabilityNeedsAnObservationWindow(unittest.TestCase):
+class DurabilityNeedsAnObservationNotAWindow(unittest.TestCase):
+    """0.9.6 (F6) replaced the 14-day window: age is not an observation. A closure counts
+    as a durable fix only when an oracle re-observed it on newer material
+    (`oracle.durable`); `tests/test_oracle_acceptance.py` holds the full rule."""
 
-    def test_a_closure_from_yesterday_is_not_yet_a_durable_fix(self):
-        fresh = benchmark.useful_outcomes(p7_state(closed_days_ago=1))
-        old = benchmark.useful_outcomes(p7_state(closed_days_ago=90))
-        print(f"\n  WINDOW     {benchmark.DURABILITY_WINDOW_DAYS} days · closed "
-              f"yesterday -> {fresh[1]} · closed 90 days ago -> {old[1]}")
-        self.assertEqual(0, fresh[1]["durable_fix"],
-                         "a closure with no observation window counted as durable")
-        self.assertEqual(1, old[1]["durable_fix"])
-        # It does not VANISH: an un-aged closure is still a record that survived
-        # validation, so the denominator keeps it under the kind it has earned.
-        self.assertEqual(1, fresh[1]["confirmed_defect"])
-        self.assertEqual(1, fresh[0])
-        self.assertEqual(1, old[0])
+    def test_no_closure_ages_into_a_durable_fix(self):
+        for days in (1, 90):
+            n, kinds = benchmark.useful_outcomes(p7_state(closed_days_ago=days))
+            print(f"\n  AGE        closed {days} days ago, no re-observation -> {kinds}")
+            self.assertEqual(0, kinds["durable_fix"])
+            # It does not VANISH: the closure is still a record that survived
+            # validation, so the denominator keeps it under the kind it has earned.
+            self.assertEqual(1, kinds["confirmed_defect"])
+            self.assertEqual(1, n)
 
-    def test_a_reset_counter_does_not_buy_durability(self):
-        """`attempts == 0` on a record closed today is what a rewrite produces. The old
-        rule counted it; the window is what refuses it."""
-        reset = p7_state(closed_days_ago=0, attempts=0)
-        now = benchmark.useful_outcomes(reset)
-        print(f"  RESET      closed today, attempts=0 -> {now[1]}")
-        self.assertEqual(0, now[1]["durable_fix"])
-        # And the old behaviour, reproduced with window=0, to show what changed.
-        was = benchmark.useful_outcomes(reset, window=0)
-        print(f"  OLD RULE   the same record with window=0 -> {was[1]}")
-        self.assertEqual(1, was[1]["durable_fix"],
-                         "window=0 must reproduce the rule this phase replaced")
+    def test_a_re_observed_closure_is_durable(self):
+        st = p7_state(closed_days_ago=0, attempts=0)
+        fid = st.findings[0].id
+        ev = [{"event": "state_transition", "target": fid, "verb": "record-verdict",
+               "verdict": "closed", "snapshot": "s1"},
+              {"event": "oracle_run", "finding": fid, "verdict": "defect-absent",
+               "snapshot": "s2"}]
+        self.assertEqual(1, benchmark.useful_outcomes(st, ev)[1]["durable_fix"])
 
-    def test_the_window_is_declared(self):
-        self.assertEqual(14, benchmark.DURABILITY_WINDOW_DAYS)
+    def test_the_window_is_gone(self):
+        self.assertFalse(hasattr(benchmark, "DURABILITY_WINDOW_DAYS"))
 
 
 class EveryFigureSaysWhichKindItIs(unittest.TestCase):

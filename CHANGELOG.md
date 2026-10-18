@@ -13,6 +13,55 @@ from the repository, it is not invented here.
 
 ---
 
+## 0.9.6 — 2026-10-17 · schema 1
+
+The response to the **seventh** review (2026-10-16), which read 0.9.5 plus an uncommitted
+STOP-handling change and found it not ready for autonomous operation, and set a
+supervised internal pilot as the next level to reach. Every item it named was reproduced
+on both trees before any change was planned (`.supergoal/BASELINE.md` in the development
+tree); `docs/audit-response-7.md` answers them item by item.
+
+Everything below is scoped to `orchestrated` sessions — the ones `xcheck next` and
+`xcheck loop` launch through `runner.py`. The only direct surface is read-only `status`,
+which dispatches nothing and has no containment claim to make.
+
+11 phases. The external battery went from **1,796 tests to 1,937**. No schema bump:
+`state.json` written by 0.9.5 is read unchanged, and every field added below is optional
+on read.
+
+- **A session always settles (F1, F2).** `runner.settle` is the one way a dispatched
+  session ends, in both dispatchers: the record is finished, the partial work is
+  quarantined for any non-`ok` outcome, the worktree is removed. A malformed stop is a
+  `refused` result, never a traceback.
+- **A stop is a file, bound to its charter (F3).** `$XCHECK_STOP_FILE`, read by the
+  parent; a quoted STOP line in a log is not a stop. A stop naming a target the session
+  was not given is refused. A claimed stop halts that target for every role until
+  `xcheck resolve-stop <ID> --resolution "…"` (event `stop_resolved`) or a write verb
+  that changes it; an identical `amend-pass` is refused. `honest-stop` is renamed
+  `stop-claimed`: a stop is a claim, not a verified cause.
+- **Material identity by bytes (F4).** `subject_manifest` scheme 2 hashes every presented
+  file, untracked included; `unknown` with a reason when it cannot. Records without
+  `subject_manifest_scheme` are scheme 1 and are not compared with scheme 2.
+- **The capsule carries the full charter (F5)**, for every role and both dispatchers.
+- **Acceptance by result (F6, P1).** A finding may carry a `## Oracle` block;
+  `xcheck run-oracle F-NNNN` runs it under the `container` profile only, with no network,
+  and records an `oracle_run` event. `record-verdict closed` needs a `defect-absent` run
+  on the current material by an oracle seen `defect-present` before — or
+  `--evidence manual:`, labelled MANUAL and never durable. Durability is re-observation,
+  not age.
+- **One Codex provider path (P1).** `images/codex` (Codex CLI 0.162.1) and
+  `images/fake-codex`; the `codex-stream` adapter reads usage from the CLI's own
+  top-level event stream in the parent, which writes the sidecar. `{sidecar}` is refused
+  under `container`. `xcheck doctor` asks the image, and checks the credential by name.
+  The live canary is **NOT VERIFIED**: no operator credential was present.
+- **A payer-owned token ceiling (P1).** The operator profile may set `budgets` and
+  `tokens_per_*`; the effective value is the minimum, so the subject can only tighten it.
+  Admission (`stop-ceiling`, hard) charges provider-measured tokens, else the session's
+  reservation. Unit: tokens; an admission ceiling, not a money ceiling.
+- **Measured, not tuned (P2).** `docs/efficiency-0.9.6.md`: a pre-registered controller
+  benchmark and controller costs; nothing measured as a bottleneck, so nothing was
+  optimised.
+
 ## 0.9.5 — 2026-09-15 · schema 1
 
 The response to the **sixth** industrial-readiness audit, which read `15cf5f8` and found

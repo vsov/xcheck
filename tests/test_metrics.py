@@ -130,6 +130,14 @@ EVENTS = [
      "session_id": "d" * 16, "verb": "record-verdict", "target": "CF-0001",
      "from_status": "fixed", "to_status": "closed", "verdict": "closed",
      "summary": "CF-0001: fixed -> closed"},
+    # 0.9.6 (F6): durability is re-observation. An oracle re-ran on newer material and
+    # still found the defect absent — for F-0001 and CF-0001, and for nothing else.
+    {"ts": "2026-08-15T10:06:30+00:00", "event": "oracle_run", "session_id": None,
+     "finding": "F-0001", "verdict": "defect-absent", "snapshot": "s-later",
+     "oracle_digest": "o1"},
+    {"ts": "2026-08-15T10:06:40+00:00", "event": "oracle_run", "session_id": None,
+     "finding": "CF-0001", "verdict": "defect-absent", "snapshot": "s-later",
+     "oracle_digest": "o2"},
     {"ts": "2026-08-15T10:07:00+00:00", "event": "gate_reached", "session_id": None,
      "gate": "stop-needs-human"},
 ]
@@ -142,7 +150,8 @@ EXPECTED = {
     #    (killed), CF-0001 (survived) = 7. Survived = 6. 6/7 = 85.714…
     "auditor_accuracy_pct": 85.7,
     # 2. fix durability — reached a verdict: F-0001, F-0002, F-0003, CF-0001 = 4.
-    #    Closed on the first attempt: F-0001, CF-0001 = 2. 2/4.
+    #    Re-observed after closing (0.9.6: `oracle.durable`): F-0001, CF-0001 = 2. 2/4.
+    #    F-0002 closed too, but nothing re-ran its oracle — closing is not holding.
     "fix_durability_pct": 50.0,
     "fix_durability_baseline_pct": 70.3,
     # 3. reopen rate — reached remediation: F-0001..F-0005, CF-0001 = 6. Ever
@@ -177,10 +186,10 @@ AFTER_THE_PREREGISTRATION = frozenset({"sessions_by_route"})
 
 EXPECTED_BREAKDOWNS = {
     # reached by dimension: invariants F-0001,F-0002; contracts F-0003,CF-0001.
-    # first-pass by dimension: invariants F-0001; contracts CF-0001. Both 1/2.
+    # re-observed by dimension: invariants F-0001; contracts CF-0001. Both 1/2.
     "durability_by_dimension": {"contracts": 50.0, "invariants": 50.0},
-    # individual reached F-0001,F-0002,F-0003 (1 first-pass) = 33.33…; class reached
-    # CF-0001 (1 first-pass) = 100.
+    # individual reached F-0001,F-0002,F-0003 (1 re-observed) = 33.33…; class reached
+    # CF-0001 (1 re-observed) = 100.
     "durability_by_fix_type": {"class": 100.0, "individual": 33.3},
     # one record (F-0008) of ten carries `recurrence_of`.
     "recurrence_rate_pct": 10.0,
@@ -218,7 +227,7 @@ class TheFixtureIsAValidProject(unittest.TestCase):
         self.assertEqual(len(state.class_findings), 1)
         self.assertEqual(len(state.queue), 3)
         self.assertEqual(len(state.sessions), 4)
-        self.assertEqual(len(envelope.read_events(fx.root)), 8)
+        self.assertEqual(len(envelope.read_events(fx.root)), len(EVENTS))
 
 
 class EachMetricMatchesTheHandDerivedAnswer(unittest.TestCase):

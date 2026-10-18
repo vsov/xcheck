@@ -1,9 +1,10 @@
 # XCHECK — Cross-Agent Audit & Remediation Methodology
 
-version: 0.9.5
+version: 0.9.6
 
 Self-contained. If you are an agent reading this inside a project's `audit/`
-directory, this file plus `AUDIT.md` plus your charter is everything you need.
+directory, your context capsule (named in your prompt) is what to read first: it is
+a subset of this file plus `AUDIT.md`, which stay the authority, plus your charter.
 Do not read the whole project "for context" — the Session Protocol (§4) tells
 you exactly what to read.
 
@@ -201,7 +202,7 @@ Nothing in this document constrains the **register** an agent writes in. What it
 ### Planner
 - **Mission:** inventory the project and its norms; produce dimensions, a unit map, and a pass queue.
 - **Default agent:** Codex, one session.
-- **Reads:** XCHECK.md; the project's normative documents; a structural listing of the project. Not the full content of every unit.
+- **Reads:** the context capsule first, when one exists; XCHECK.md; the project's normative documents; a structural listing of the project. Not the full content of every unit.
 - **Writes (evidence):** AUDIT.md — the project's inventory in prose: what each dimension catches, what each unit is and who is responsible for it, and which norm backs which dimension.
 - **Writes (record):**
   - `propose-construal` — its own operational construal, and only when §10 `construal_gate` is on.
@@ -213,7 +214,7 @@ Nothing in this document constrains the **register** an agent writes in. What it
 ### Auditor
 - **Mission:** run one pass — one dimension against a batch of units — and record findings; also give disputed findings one written round of objection.
 - **Default agent:** Codex, one session per pass (or a split of one, §4 rule 4).
-- **Reads:** XCHECK.md; AUDIT.md; the pass charter; the units in the charter's scope; the norm the charter cites; templates/pass.md and templates/finding.md, copied when starting a pass or filing a finding.
+- **Reads:** the context capsule first; XCHECK.md and AUDIT.md as its authority; the pass charter; the units in the charter's scope; the norm the charter cites; templates/pass.md and templates/finding.md, copied when starting a pass or filing a finding.
 - **Writes (evidence):** the body of each finding it files, `findings/F-NNNN.md`; its pass report, `passes/P-NN-<dimension>.md`; one round of written objection in a finding's `## Objection` section when the Remediator disputes it (§5, §9 rule 3).
 - **Writes (record):**
   - `file-finding` — each finding it files, and a recurrence with `--recurrence-of`.
@@ -244,7 +245,7 @@ Nothing in this document constrains the **register** an agent writes in. What it
 ### Remediator
 - **Mission:** fix a batch of accepted findings.
 - **Default agent:** Claude, one or more sessions.
-- **Reads:** XCHECK.md; AUDIT.md; the charter (a list of finding IDs); the finding files in scope; templates/plan.md and templates/class-finding.md, copied when opening a remediation plan or a class finding.
+- **Reads:** the context capsule first; XCHECK.md and AUDIT.md as its authority; the charter (a list of finding IDs); the finding files in scope; templates/plan.md and templates/class-finding.md, copied when opening a remediation plan or a class finding.
 - **Writes (evidence):** `plans/RP-NNNN.md`; edits to the project material; the Validation and Remediation sections of each finding file; the `## Refusal` prose of a finding it accepts but cannot execute (§5); a class finding's body when a census escalates (§8).
 - **Writes (record):**
   - `record-plan` — the plan and the findings it covers.
@@ -262,7 +263,7 @@ Nothing in this document constrains the **register** an agent writes in. What it
 ### Verifier
 - **Mission:** give a binding verdict on a batch of fixed findings.
 - **Default agent:** Codex, one or more sessions.
-- **Reads:** XCHECK.md; AUDIT.md; the charter; the finding files in scope; the diffs or changes the Remediation section points to.
+- **Reads:** the context capsule first; XCHECK.md and AUDIT.md as its authority; the charter; the finding files in scope; the diffs or changes the Remediation section points to.
 - **Writes (evidence):** the Verification section of each finding file; the `## Refusal` prose of a finding it accepts but cannot execute (§5).
 - **Writes (record):**
   - `record-verdict` — `closed` or `reopened`, the binding act; refused for the session that recorded the fix.
@@ -279,7 +280,7 @@ Nine rules. They apply to every session, in every role.
 
 1. **Charter required.** No session starts without an exact scope and stop conditions — e.g. "dimension X, units 4–6, stop after 15 findings" for an Auditor, or "findings F-0012..F-0019" for a Remediator.
 2. **Fresh eyes.** State comes only from files. A session does not inherit conclusions from earlier sessions by memory. Anything a session acts on is re-verified against its source at the moment it is touched, regardless of what any prior session recorded about it.
-3. **Explicit reading list.** Read XCHECK.md, AUDIT.md, your charter, the files the ledger points you to, and the artifact templates you instantiate. Nothing else. Reading the whole project "for context" is forbidden.
+3. **Explicit reading list.** Read, in this order: your context capsule (`audit/capsules/<session>.md`, named in your prompt — your charter's contract verbatim, its norms, stop, material and the findings already filed against it); XCHECK.md and AUDIT.md wherever the capsule does not answer a question your charter raises, because the capsule is a SUBSET of them and they remain the authority; then the files the ledger points you to and the artifact templates you instantiate. Nothing else. Reading the whole project "for context" is forbidden.
 4. **Stop conditions are sacred.** Scope overflow: split the charter and queue the remainder with `xcheck queue-pass` — the queue is machine state, and AUDIT.md is the prose the operator migrated from, not the queue; skimming through to the end anyway is forbidden. Context running out: record what was covered and what was not, then exit cleanly.
 5. **Coverage report is mandatory.** Every pass states explicitly what it did not cover. A silent gap is a protocol violation, not an acceptable shortcut.
 6. **No finding quota.** Caps (§10) are upper bounds, not targets, and there is no minimum. A clean pass — zero findings — is a valid result and is recorded as one.
@@ -333,6 +334,8 @@ Definitions:
   - **The Remediator and the Verifier**, whose charter *is* a set of findings, write the prose in that finding's `## Refusal` section and record the typed code with `xcheck record-refusal <ID> --reason <code>`, which renders it into the `refusal:` field; §3 grants each that write surface, and for these two roles the code and the section prose are both required, in that finding — the verb refuses a code whose prose half is missing, because a code with no prose is the silent gap §4 rule 5 forbids.
   - **The Planner**, whose charter produces AUDIT.md and carries no finding, records the reason and the prose in AUDIT.md itself (§3); the finding-frontmatter `refusal:` field does not apply to it.
   - **An Auditor pass**, whose charter produces a pass report and carries no finding, records the reason and the prose in its `passes/P-NN` report (§3); the finding-frontmatter `refusal:` field does not apply to it.
+
+  - **Any of the four, whatever the write path does — the stop channel.** A role that cannot execute its charter may also STOP: write one JSON object, `{"reason": <code>, "target": <the id its charter names, or PLAN>, "detail": <what is missing>}`, to `$XCHECK_STOP_FILE` (`audit/.xcheck-stop.json` in its working tree) and exit. The orchestrator reads it even when every verb refuses, binds it to the targets the session was given (a stop naming any other target is refused), and halts that target until the operator lifts it with `xcheck resolve-stop <ID> --resolution "<what changed>"` or a write verb changes it. A stop is a CLAIM the operator reviews; text the session prints is never a stop.
 
   **Triage has no refusal at all**: it is the human decision gate, not a chartered agent execution. Its charter is discharged by `accepted`/`rejected`/`deferred` — a human who will not take up a finding parks it as `deferred` (a route it revisits later, §5) or rejects it, and both are decisions *about the finding*, never a refusal *of the attempt* — and its only write surface is `set-status` (§3), so it needs no refusal target. Whatever the role, recording a refusal never changes the finding's `status`, so no status-ownership rule of this section is engaged (§5); the reasons pass forward to every successor attempt on the same charter, and the charter itself stays in force (§4 rule 1), so the work remains owed rather than silently dropped. A refusal is thus distinct from `disputed`, where the finding itself is contested, and from `rejected`, where Triage declined it (§5): those two decide something about the finding, while a refusal decides only about this attempt at it.
 - **`blocked: norm-ratification`** — a rendered frontmatter field (not a status), raised by `block-on-norm` on a `planned` CF that stopped at the §8 norm-ratification gate. It withholds the fix while `status` stays `planned`. Its machine-readable pair is the **`norm-ruling`** frontmatter field: `pending` while the decision is outstanding, and the winning norm id (e.g. `N1` or `N1-over-N4`) once the norm owner (human, not Triage) rules. The gate is fail-closed on `norm-ruling` — absent, `pending`, empty, or any unrecognized token keeps the CF stopped; only `record-ruling` with a valid norm-id token clears `blocked:` and lets the Remediator resume (§8 rule 8). The `## Norm ruling` body section carries the human-readable reasoning but is not itself the gate.

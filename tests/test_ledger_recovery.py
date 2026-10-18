@@ -347,7 +347,8 @@ sys.exit(main(["xcheck", "--project", {project!r}, "set-status", "F-0001", "acce
 BOUNDARIES = ("after-reserve", "after-state-write", "after-append")
 
 
-@needs_live_corpus
+# Gated per METHOD, not per class: 1 of 5 tests here read the corpus. The rest
+# run on temp fixtures or the package's own source, and must run in the exported tree.
 class KilledAtEveryWriteBoundary(unittest.TestCase):
     """PHASE 4 (fifth audit), the blocking finding: after a failed state write,
     `recover --apply` could append a transition that never happened.
@@ -480,6 +481,7 @@ class KilledAtEveryWriteBoundary(unittest.TestCase):
         self.assertIn("already in the stream", out,
                       "the row was appended twice instead of being recognised")
 
+    @needs_live_corpus
     def test_4_the_same_three_boundaries_against_the_real_stream(self):
         for boundary in BOUNDARIES:
             with self.subTest(boundary=boundary):

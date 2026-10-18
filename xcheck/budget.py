@@ -47,6 +47,7 @@ GATE_KEY = {
     # this entry is only its default.
     "stop-known-overrun": "tokens_per_audit",
     "stop-marginal-value": "marginal_value_window",
+    "stop-ceiling": "tokens_per_audit",
 }
 
 # The reference figure, kept in the code rather than only in a document, because every
@@ -242,6 +243,9 @@ def cap_verdict(conf, cmd):
     bad = cap_problem(conf, cmd)
     if bad:
         return "refused", bad
+    if CAP_PLACEHOLDER not in cmd and "tokens_per_session" in operator_ceilings(conf):
+        return "reservation", (f"tokens_per_session={cap:,} is the operator's admission "
+                               f"reservation, not a provider limit. {GUARANTEE}")
     return "unverified", (
         f"`{CAP_PLACEHOLDER}` is filled with {cap:,} in this role command, and xcheck has "
         f"NOT verified that anything enforces it: which flag limits output is a fact "
@@ -261,8 +265,115 @@ def gate_message(kind, detail):
     """The refusal, in one paragraph: what fired, the figure behind it, the coverage of
     that figure, and the key to raise. No currency anywhere — the tool measures tokens
     and seconds and prints no money it cannot measure."""
-    key = detail.get("key") or GATE_KEY[kind]
+    key = detail.get("key") or GATE_KEY.get(kind, "tokens_per_session")
     return f"{detail['why']} Raise `{key}` to continue, or clear the condition it names."
+
+
+# ------------------------------------------------ the payer's admission ceiling (0.9.6)
+
+# The unit and the guarantee, in one sentence that `status`, the refusal and the docs all
+# print. Codex CLI has no per-session hard cap, so what xcheck can promise is ADMISSION:
+# no new dispatch past the ceiling. The session already running can overshoot by its own
+# overrun, and no money figure is promised at all.
+GUARANTEE = ("Unit: tokens. Guarantee: an ADMISSION ceiling — no session is dispatched "
+             "unless the operator's remaining tokens cover its reservation "
+             "(tokens_per_session); one in-flight session may exceed its reservation; "
+             "money is not guaranteed.")
+ADMISSION = "stop-ceiling"
+
+
+class CeilingRefused(Exception):
+    """A parallel pass the admission ceiling did not admit — reported, never dispatched."""
+
+
+def operator_ceilings(conf):
+    """`{key: int}` — the ceilings the OPERATOR set (from `util.load_conf`), or `{}`."""
+    from xcheck.policy import OPERATOR_CEILINGS, positive_int
+    out = {}
+    for pair in str((conf or {}).get(OPERATOR_CEILINGS, "") or "").split(","):
+        k, _, v = pair.partition("=")
+        if positive_int(v):
+            out[k.strip()] = positive_int(v)
+    return out
+
+
+def _counted(value):
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def ledger(conf, events):
+    """The admission account, from the event stream alone, or None when not armed.
+
+    Armed when the operator set `tokens_per_audit` (and so, by the profile's own rule,
+    `tokens_per_session`). Every session the stream names is charged exactly once:
+
+      * finished with tokens the PROVIDER measured — those tokens, overshoot included;
+      * finished or abandoned without them (crash, lost telemetry, an agent-reported or
+        log-parsed figure) — its reservation, or the reported figure if that is larger;
+        a figure the subject printed never LOWERS the charge;
+      * dispatched and not finished (in flight, or killed with no record) — its
+        reservation.
+
+    Recomputed from the stream on every call, so a reload gives the same number."""
+    if "tokens_per_audit" not in operator_ceilings(conf):
+        return None
+    cap, r = _ceiling(conf, "tokens_per_audit"), _ceiling(conf, "tokens_per_session")
+    if not cap or not r:
+        return None
+    seen, ended = [], {}
+    for e in events:
+        sid, kind = e.get("session_id"), e.get("event")
+        if not sid or kind not in ("session_dispatched", "session_finished",
+                                   "session_abandoned"):
+            continue
+        if sid not in seen:
+            seen.append(sid)
+        if kind != "session_dispatched":
+            ended[sid] = e
+    measured = reserved = held = 0
+    n_reserved = n_open = 0
+    for sid in seen:
+        e = ended.get(sid)
+        if e is None:
+            held += r
+            n_open += 1
+            continue
+        tokens = _counted(e.get("tokens"))
+        if e.get("telemetry_source") == "provider" and tokens is not None:
+            measured += tokens
+        else:
+            reserved += max(r, tokens or 0)
+            n_reserved += 1
+    charged = measured + reserved + held
+    return {"ceiling": cap, "reservation": r, "measured": measured, "reserved": reserved,
+            "held": held, "sessions_reserved": n_reserved, "sessions_open": n_open,
+            "sessions": len(seen), "charged": charged, "remaining": cap - charged}
+
+
+def ledger_line(led):
+    return (f"operator ceiling {led['ceiling']:,} tokens; charged {led['charged']:,} "
+            f"({led['measured']:,} provider-measured, {led['reserved']:,} reserved for "
+            f"{led['sessions_reserved']} session(s) with no provider figure, "
+            f"{led['held']:,} held by {led['sessions_open']} open session(s)); remaining "
+            f"{led['remaining']:,}; one dispatch reserves {led['reservation']:,}")
+
+
+def admit(conf, events, n=1):
+    """`(k, detail)` — how many of `n` dispatches the remaining ceiling admits.
+
+    `detail` is None when all `n` are admitted, else the refusal for the rest. Callers:
+    the decision (serial `next`/`loop`, and so `--dry-run`), the parallel fan-out before
+    any sandbox exists, and every retry before it re-dispatches."""
+    led = ledger(conf, events)
+    if led is None:
+        return n, None
+    k = max(0, min(n, led["remaining"] // led["reservation"]))
+    if k >= n:
+        return n, None
+    return k, dict(led, key="tokens_per_audit (operator profile)", admitted=k, asked=n,
+                   why=(f"the operator's admission ceiling refuses "
+                        f"{n - k} of {n} dispatch(es): {ledger_line(led)}. {GUARANTEE} "
+                        f"`xcheck status` prints the account."))
 
 
 def gates(state, conf, events, charter=None, cmd=None):
@@ -274,6 +385,11 @@ def gates(state, conf, events, charter=None, cmd=None):
     """
     if not budget_enabled(conf):
         return None
+    # --- 0.9.6 (P1b): the payer's ceiling, first. Arithmetic over the stream, so HARD
+    # and floor-exempt; unknown spend is charged, never read as zero.
+    _k, refused = admit(conf, events, 1)
+    if refused:
+        return ADMISSION, refused
     tok = spend(state, events)
     cov = coverage_note(tok)
     total = tok["total"] or 0
@@ -415,7 +531,8 @@ def derived_report():
 # caller everything is fine.
 STATISTICAL_GATES = ("stop-budget-session", "stop-budget-audit", "stop-budget-pass",
                      "stop-no-progress-share", "stop-marginal-value")
-HARD_GATES = ("stop-charter-repeats", "stop-dispatch-cap", "stop-known-overrun")
+HARD_GATES = ("stop-charter-repeats", "stop-dispatch-cap", "stop-known-overrun",
+              "stop-ceiling")
 
 # PHASE 7 (fifth audit). Every ceiling gets one of two verdicts, and both are declared
 # rather than implied by which branch happens to run first. The audit's case: 1,000
@@ -594,6 +711,11 @@ def cap_problem(conf, cmd):
         # ceilings in the abstract is not about to run anything.
         return None
     if CAP_PLACEHOLDER in cmd:
+        return None
+    # 0.9.6 (P1b): an OPERATOR `tokens_per_session` is the admission RESERVATION, and the
+    # promise made about it is `GUARANTEE` — one in-flight session may exceed it. That
+    # promise needs no provider flag, so nothing is refused for lacking one.
+    if "tokens_per_session" in operator_ceilings(conf):
         return None
     return (f"tokens_per_session={cap:,} is set and this role command carries no "
             f"`{CAP_PLACEHOLDER}`, so the ceiling would be checked against a measured "

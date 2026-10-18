@@ -31,7 +31,12 @@ MENTION = re.compile(r"`xcheck\s+([a-z][a-z-]+)")
 # Command words that are NOT write verbs. Named explicitly so a new read-only
 # command does not silently look like an undocumented verb.
 READ_ONLY = {"status", "next", "loop", "lint", "metrics", "unlock", "cancel",
-             "selftest", "migrate", "install", "upgrade"}
+             "selftest", "migrate", "install", "upgrade",
+             # 0.9.6 (F3): the operator's answer to a claimed stop; not a write verb
+             # (it emits an event and runs before any state document may exist).
+             "resolve-stop",
+             # 0.9.6 (F6): runs a finding's oracle in the container and emits an event.
+             "run-oracle"}
 
 
 def mentioned(text):

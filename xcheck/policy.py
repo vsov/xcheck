@@ -190,6 +190,76 @@ PROJECT_KEYS = frozenset({
 })
 
 
+# 0.9.6 (P1b): the four of those the PAYER may also set — in the operator profile, as a
+# CEILING. In the subject they stay project keys and can only TIGHTEN: the effective value
+# is the smaller of the two, and a subject `budgets=off` cannot disarm an operator's
+# ceiling. Before this a session could edit `audit/orchestrator.conf` (any `audit/` path
+# is collectable) and the next dispatch would read the ceiling it wrote.
+OPERATOR_CEILING_KEYS = ("budgets", "tokens_per_session", "tokens_per_pass",
+                         "tokens_per_audit")
+TOKEN_CEILING_KEYS = OPERATOR_CEILING_KEYS[1:]
+# Which ceilings came from the operator, as `key=value,…`. Written by `util.load_conf`
+# and refused in either file: a subject that could write it could claim to be the payer.
+OPERATOR_CEILINGS = "operator_ceilings"
+# Named only to be refused: there is one mode, and it is not `hard` (`budget.GUARANTEE`).
+BUDGET_MODE_KEY = "budget_mode"
+
+
+def positive_int(value):
+    """`value` as an int >= 1, or None. A ceiling of 0, a negative or garbage is no
+    ceiling, and none of them may stand in for one."""
+    try:
+        n = int(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+    return n if n >= 1 else None
+
+
+def ceiling_problems(raw):
+    """Why the operator's ceiling keys cannot be believed, as sentences. Empty = fine."""
+    bad = []
+    for k in TOKEN_CEILING_KEYS:
+        if k in raw and positive_int(raw[k]) is None:
+            bad.append(f"{k}={raw[k]!r} is not a token count >= 1")
+    flag = str(raw.get("budgets", "on")).strip().lower()
+    if flag not in ("on", "off"):
+        bad.append(f"budgets={raw['budgets']!r} is neither on nor off")
+    if "tokens_per_audit" in raw and "tokens_per_session" not in raw:
+        bad.append("tokens_per_audit needs tokens_per_session beside it: admission reserves "
+                   "tokens_per_session for every dispatch, and a session whose spend nobody "
+                   "measured is charged that reservation — without one, unknown spend "
+                   "would count as zero")
+    return bad
+
+
+def budget_mode_refusal(where, raw):
+    """The refusal for a `budget_mode` line in either file, or None when there is none."""
+    if BUDGET_MODE_KEY not in raw:
+        return None
+    from xcheck.budget import GUARANTEE
+    return (f"{where}: {BUDGET_MODE_KEY}={raw[BUDGET_MODE_KEY]!r} is refused. {GUARANTEE} "
+            f"There is one mode and it needs no key: a `hard` mode would promise a "
+            f"per-session cap the provider CLI does not enforce.")
+
+
+def effective_ceilings(subject, operator):
+    """The ceiling keys to merge over the subject's, from the operator's profile.
+
+    `{}` when the operator set none. Otherwise `budgets=on` whatever the subject says,
+    and each operator token ceiling as `min(operator, subject)` — a subject value that is
+    absent, 0, negative or garbage is ignored rather than read as a loosening."""
+    tokens = {k: positive_int(operator[k]) for k in TOKEN_CEILING_KEYS if k in operator}
+    armed = str(operator.get("budgets", "")).strip().lower() == "on"
+    if not tokens and not armed:
+        return {}
+    out = {"budgets": "on"}
+    for k, cap in tokens.items():
+        mine = positive_int(subject.get(k))
+        out[k] = str(min(cap, mine) if mine else cap)
+    out[OPERATOR_CEILINGS] = ",".join(f"{k}={v}" for k, v in sorted(tokens.items()))
+    return out
+
+
 def trust_level(conf):
     """The declared trust level, or None. Validated here so every reader agrees."""
     raw = str(conf.get(TRUST_KEY, "") or "").strip()
@@ -574,7 +644,8 @@ def _validated_keys(text, path):
                 f"pick. Delete one of the two lines.")
         seen[k] = (n, v)
         raw[k] = v
-    project_keys = sorted(k for k in raw if classify(k) == "project")
+    project_keys = sorted(k for k in raw if classify(k) == "project"
+                          and k not in OPERATOR_CEILING_KEYS)
     if project_keys:
         raise PolicyError(
             f"{path}: {', '.join(project_keys)} belong to the PROJECT, not to the "
@@ -598,6 +669,17 @@ def _validated_keys(text, path):
     withdrawn = refuse_withdrawn(raw, path)
     if withdrawn:
         raise PolicyError(withdrawn)
+    mode = budget_mode_refusal(path, raw)
+    if mode:
+        raise PolicyError(mode)
+    if OPERATOR_CEILINGS in raw:
+        raise PolicyError(f"{path}: {OPERATOR_CEILINGS} is written by xcheck's loader and "
+                          f"read from no file; set the ceilings themselves "
+                          f"({', '.join(TOKEN_CEILING_KEYS)})")
+    bad = ceiling_problems(raw)
+    if bad:
+        raise PolicyError(f"{path}: the operator's token ceiling is refused — "
+                          + "; ".join(bad) + ".")
     unknown = sorted(k for k in raw if classify(k) == "unknown")
     if unknown:
         raise PolicyError(
@@ -653,7 +735,8 @@ verifier_cmd=codex exec --sandbox workspace-write {prompt}
 # under sandbox_profile=container. Under `none` it is refused outright.
 remediator_cmd=claude -p {prompt}
 # telemetry_adapter: which provider's usage shape the wrapper above hands back —
-# `codex` or `fake`. There is NO DEFAULT and none is guessed from the role command: a
+# `codex`, `codex-stream` (the parent reads `codex exec --json`'s own event stream; the
+# one that works under `container`, docs/codex-provider.md) or `fake`. There is NO DEFAULT and none is guessed from the role command: a
 # command named `codex` may be a wrapper, a proxy or a shim, and inferring a provider from
 # a program name is deciding something the operator did not say. Unset means sessions
 # record no provider figure, which is the honest answer for an unconfigured machine.
@@ -743,6 +826,17 @@ lease_ttl=300
 # mutable tag means the image that held the recorded escape matrix is not necessarily
 # the image that runs tomorrow. The shipped default has sh, git and busybox — enough for
 # the escape probes and a read-only session, but NOT python3 and NOT any agent CLI.
+# THE CONTAINED CODEX PATH (docs/codex-provider.md) — build `images/codex`, then set
+# these together, pinning YOUR build's ID (`docker image inspect -f '{{.Id}}'
+# xcheck-codex`). The release build of 2026-10-17 was
+#   sha256:20fbca67a4ab164523d440e2472d1f9313e8dc782e2e9911b30a2aa077d5aa4a
+#   container_image=xcheck-codex@sha256:<your build's ID>
+#   telemetry_adapter=codex-stream
+#   env_allowlist=OPENAI_API_KEY
+#   egress_allowlist=api.openai.com
+#   auditor_cmd=codex exec --json --ephemeral --skip-git-repo-check -s workspace-write {prompt}
+# No `{sidecar}` under `container`: it names a host path no mount reaches, and the launch
+# refuses it.
 container_image=alpine/git@sha256:3b44767883ac77bddae0160cc27b6b039345e23fa3504f4159efaa32264ab57f
 # unsafe_allow_unpinned_image: the escape hatch, named for what it costs. `on` permits
 # an unpinned image and WRITES THE WAIVER INTO THE RUN'S LOG. It is about PINNING ONLY:

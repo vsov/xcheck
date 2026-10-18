@@ -513,7 +513,8 @@ class EveryStateFieldHasARoute(unittest.TestCase):
     CASES = {
         "set-status": ("F-0001", "accepted"),
         "record-fix": ("F-0002", "--session", SESSION_A),
-        "record-verdict": ("F-0003", "--verdict", "closed", "--session", SESSION_B),
+        "record-verdict": ("F-0003", "--verdict", "closed", "--session", SESSION_B,
+                           "--evidence", "manual:fixture"),
         "admit-construal": (None, "--admitter", "human:operator"),
         # PHASE 9: `--locator`/`--source-hash` are filled in from the fixture's own
         # commit in `routes()`; the verb resolves them against the subject commit

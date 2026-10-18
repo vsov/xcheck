@@ -26,6 +26,7 @@ advisory one means something is weaker than it could be on a machine that still 
 """
 
 import functools
+import os
 import shutil
 import subprocess
 from collections import namedtuple
@@ -216,14 +217,26 @@ def check_agent_cli(conf, project):
                       "Add `auditor_cmd=<your agent CLI> {prompt}` to the operator "
                       "profile")
 
-    per_role, missing = [], []
+    per_role, missing, unknown = [], [], []
+    from xcheck.runner import image_cli_probe
+    asked = {}
     for role, cmd in rows:
         if not cmd:
             per_role.append(f"{role}=UNSET")
             continue
         exe = (shlex.split(cmd) or [""])[0]
         if contained:
+            # 0.9.6 (P1a): the IMAGE is asked, once per executable — `<exe> --version`
+            # inside the pinned image with no network. It runs the image's binary, never
+            # the host's or the subject's, so it is not the F-0098 interview.
+            if exe not in asked:
+                asked[exe] = image_cli_probe(conf, exe)
+            ok, said = asked[exe]
             per_role.append(f"{role}=`{exe}` (in the image)")
+            if ok is False:
+                missing.append(said)
+            elif ok is None:
+                unknown.append(said)
             continue
         ok = shutil.which(exe)
         per_role.append(f"{role}=`{exe}`{'' if ok else ' NOT ON PATH'}")
@@ -245,17 +258,20 @@ def check_agent_cli(conf, project):
     # audit's second false positive, and answering FAIL would be just as invented —
     # nothing here has looked inside the image, and looking means starting a container,
     # which is an action a preflight may not take.
-    if contained and unset:
+    if contained and missing:
         return Result("agent-cli-present", FAIL,
                       "; ".join(missing) + f" — {detail}",
-                      "Set the missing <role>_cmd in the operator profile")
-    if contained:
+                      "Set the missing <role>_cmd in the operator profile, or build the "
+                      "image that carries the CLI it names (images/codex)")
+    if contained and unknown:
         return Result("agent-cli-present", UNVERIFIED,
-                      detail + " — the host PATH is not where these run and this check "
-                               "does not start a container to look",
-                      f"Ask the image itself, once: `docker run --rm "
-                      f"{(conf or {}).get('container_image', '<image>')} sh -lc "
-                      f"'command -v <exe>'` for each role command above")
+                      "; ".join(dict.fromkeys(unknown)) + f" — {detail}",
+                      f"Start docker and re-run, or ask the image yourself: `docker run "
+                      f"--rm --network=none --entrypoint <exe> "
+                      f"{(conf or {}).get('container_image', '<image>')} --version`")
+    if contained:
+        return Result("agent-cli-present", PASS,
+                      detail + "; " + "; ".join(said for _ok, said in asked.values()), "")
     return Result("agent-cli-present", FAIL if missing else PASS,
                   ("; ".join(missing) + f" — {detail}") if missing else detail,
                   ("Set the missing <role>_cmd in the operator profile, and install the "
@@ -298,10 +314,16 @@ def check_provider_path(conf, project):
         return Result("provider-path-permitted", FAIL,
                       f"{where}: the container runs `--network=none` (no egress "
                       f"allowlist, so no broker is started) and has NO path to "
-                      f"{adapter.provider}. Not a host default — inside this profile "
-                      f"there is no host network to default to",
+                      f"{adapter.provider}"
+                      + (f" ({', '.join(adapter.hosts)} is not permitted)"
+                         if adapter.hosts else "")
+                      + ". Not a host default — inside this profile there is no host "
+                        "network to default to",
                       "Set `egress_allowlist` to the provider host(s) this run may "
                       "reach, or dispatch under a profile that has the host's network")
+    access = _access_problem(adapter, conf, allow, contained)
+    if access:
+        return Result("provider-path-permitted", FAIL, f"{where}: {access[0]}", access[1])
     egress = (f"an internal network with a broker permitting {', '.join(allow)} and "
               f"nothing else" if contained else
               ", ".join(allow) or "(unset — the host network applies, which this "
@@ -311,13 +333,60 @@ def check_provider_path(conf, project):
                   f"token was spent", "")
 
 
+def _access_problem(adapter, conf, allow, contained):
+    """0.9.6 (P1a): `(detail, remedy)` when the adapter's declared host or credential is
+    out of reach, else None. The credential is checked by NAME: under a container HOME
+    is an empty tmpfs, so the CLI's stored login is not there, and only names in
+    `env_allowlist` reach the child. The VALUE is never read into a message."""
+    gap = [h for h in adapter.hosts if contained and h not in allow]
+    if gap:
+        return (f"the egress allowlist ({', '.join(allow)}) does not permit "
+                f"{', '.join(gap)}, which `{adapter.name}` must reach",
+                f"Add {', '.join(gap)} to `egress_allowlist`")
+    if not adapter.auth_env:
+        return None
+    passed = [n for n in adapter.auth_env if n in _env_names(conf)]
+    if not passed:
+        return (f"`env_allowlist` names none of {', '.join(adapter.auth_env)}, so the "
+                f"CLI starts with no credential",
+                f"Add `env_allowlist={adapter.auth_env[0]}` to the operator profile and "
+                f"export that variable")
+    if not any(os.environ.get(n) for n in passed):
+        return (f"{', '.join(passed)} is allowlisted but unset in this environment",
+                f"Export {passed[0]} before dispatching (its value is passed by name and "
+                f"never printed)")
+    return None
+
+
+def _env_names(conf):
+    return {n.strip() for n in str((conf or {}).get("env_allowlist", "") or "").split(",")
+            if n.strip()}
+
+
 def check_telemetry_sidecar(conf, project):
-    """The parent-owned sidecar the operator's wrapper must be told about."""
+    """The parent-owned sidecar the operator's wrapper must be told about — or, for a
+    stream adapter, the one the parent writes itself."""
     from xcheck import provider
+    from xcheck.runner import contained_sidecar_problem, resolve_profile
     adapter, _ = provider.adapter_for(conf)
     cmds = {r: (conf or {}).get(f"{r}_cmd") or "" for r in
             ("planner", "auditor", "verifier", "remediator")}
     named = [r for r, c in cmds.items() if "{sidecar}" in c]
+    # 0.9.6 (P1a): delegates to the launch's own refusal — under `container`, `{sidecar}`
+    # is a host path no mount reaches. This check used to PASS exactly that.
+    try:
+        profile = resolve_profile(conf or {}, "auditor")
+    except SystemExit:
+        profile = None
+    for r in named:
+        why = contained_sidecar_problem(conf, r, profile)
+        if why:
+            return Result("telemetry-sidecar-supported", FAIL, why.split(". ")[0],
+                          "Set `telemetry_adapter=codex-stream` and remove `{sidecar}`")
+    if adapter is not None and adapter.stream:
+        return Result("telemetry-sidecar-supported", PASS,
+                      f"adapter `{adapter.name}`: the parent parses the CLI's own event "
+                      f"stream and writes the sidecar — no path reaches the child", "")
     if adapter is None and not named:
         return Result("telemetry-sidecar-supported", FAIL,
                       "no `telemetry_adapter` and no `{sidecar}` in any role command, so "

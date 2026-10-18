@@ -148,17 +148,25 @@ class COUNTERFACTUALS(RaceCase):
         stream by raising it, and a counterfactual that let that escape would report a
         harness crash where the subject actually refused correctly.
         """
-        refused, results, spy = None, [], None
+        refused, results, raised = None, [], []
+        # Built here, not inside `race`, so the spy survives a race that raises.
+        spy = WriteSpy(on_write=self._note_merge)
         try:
-            results, _said, spy = self.race()
+            results, _said, spy = self.race(spy=spy)
         except SystemExit as e:
             refused = "broken-stream" if "chain breaks" in str(e) else str(e)[:60]
+        except OSError as e:
+            # The disarmed race also shows as a lost temp file under the merge's own
+            # write (`.state.json.tmp` replaced by the other writer first). That escapes
+            # `run_passes`, and it is a SYMPTOM of the missing window, not a harness
+            # crash — measured 2 of 5 runs before this branch existed.
+            raised.append(type(e).__name__)
         events = [json.loads(l) for l in
                   (self.fx.audit / "events.jsonl").read_text(encoding="utf-8").splitlines()]
         return {
             "overlaps": len(spy.overlaps()) if spy else None,
             "threads": len(spy.threads) if spy else 0,
-            "errors": [type(e).__name__ for _, _, e in results if e is not None],
+            "errors": [type(e).__name__ for _, _, e in results if e is not None] + raised,
             "refused": refused,
             "chain": verdict_of(xcheck_submodule("ledger").status(self.fx.root)),
             "dispatched": sum(1 for e in events if e.get("event") == "session_dispatched"),

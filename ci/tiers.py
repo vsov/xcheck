@@ -52,7 +52,30 @@ PR = (
     "test_smoke_e2e",
     # the command surface a change is most likely to break
     "test_cli_grammar", "test_run_result", "test_envelope", "test_receipt",
-    "test_lock_seed",
+    "test_honest_stop", "test_lock_seed",
+    # the 0.9.6 pilot witnesses: one real-CLI witness per reviewed defect plus its
+    # control, ~20s — the ledger every later fix flips (expected failures until fixed)
+    "test_pilot_witnesses",
+    # one settle for both dispatchers: injected failures, parity, a mixed batch, ~22s
+    "test_session_settle",
+    # the stop channel: file not log, bound to the charter, every role halted once,
+    # the printed resolution run verbatim, ~45s
+    "test_stop_channel",
+    # the material digest: every presented file by bytes, unknown when it cannot see,
+    # presentation and digest agreeing per profile (container arm needs docker), ~16s
+    "test_material_identity",
+    # the capsule carries the contract verbatim for every role, serial = parallel, and
+    # the reading order the prompt gives is the one XCHECK.md gives, ~10s
+    "test_capsule_contract",
+    # acceptance by result: the oracle block read strictly, each missing condition its own
+    # refusal, the level derived not aged, the smoke in a container (needs docker)
+    "test_oracle_acceptance",
+    # the payer's ceiling: a poisoning table through the real loader, and the admission
+    # account read back from real dispatches (serial, retry, parallel boundary), ~25s
+    "test_payer_ceiling",
+    # the new writes on a read-only audit/ and a full disk: an address, no traceback,
+    # and the printed recovery command run as printed, ~12s
+    "test_error_paths",
     # the recovery drill: cheap, and the thing that proves the ledger claims
     "test_ledger_recovery",
     # the telemetry seam: ten fields, two adapters, and the structural no-leak check
@@ -84,6 +107,9 @@ PR = (
 # lists must fail the check rather than land here by default.
 RELEASE_ONLY = (
     "test_adversarial_repo", "test_backpressure", "test_budgets", "test_ci_contract",
+    # 0.9.6 (P1a): the contained Codex path — builds the fake image and runs ~2 min of
+    # real container dispatches (record, mounts, redaction, timeout, cancel, doctor)
+    "test_codex_path",
     "test_concurrency", "test_container_profile", "test_context_capsule",
     "test_corpus_baseline",
     "test_courier_paths", "test_crash_recovery", "test_dashboard", "test_diff_scope",

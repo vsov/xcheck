@@ -265,8 +265,10 @@ PROBE_SRC = textwrap.dedent('''
 
 
     def probe_record_verdict_same_session():
+        # `--evidence manual:` so the 0.9.6 evidence gate is satisfied and the
+        # verifier != fixer check is the ONLY barrier this mutant has to remove.
         return cli("record-verdict", "F-0001", "--verdict", "closed",
-                   "--session", "a" * 16)
+                   "--session", "a" * 16, "--evidence", "manual:mutation probe")
 
 
     def probe_record_verdict_reopen():
@@ -1085,15 +1087,19 @@ class TheQuarantineGateIsLoadBearing(MutationWitness):
         self.witness(
             guard="only an `ok` session's patch is applied (the rest is quarantined)",
             module="runner.py",
-            old=('                    if outcome == "ok":\n'
-                 '                        sandbox.collect()'),
-            new=('                    if outcome != "cancelled":  # MUTATED: 0.9.0\n'
-                 '                        sandbox.collect()'),
+            # 0.9.6: the apply decision moved into `runner.settle`, the one function both
+            # dispatchers resolve a session through; the restored defect moves with it.
+            old=('            if outcome == "ok":\n'
+                 '                try:\n'
+                 '                    result = on_ok()'),
+            new=('            if outcome != "cancelled":  # MUTATED: 0.9.0\n'
+                 '                try:\n'
+                 '                    result = on_ok()'),
             probe="quarantine_not_applied", build=self.git_project,
             expect_control=lambda r: ("tree-changed=[]" in r["out"]
                                       and "bundles=1" in r["out"]),
             p0="failed-session-effects",
-            reaches="`runner.run_session`'s apply decision, read off the project tree",
+            reaches="`runner.settle`'s apply decision (both dispatchers), read off the project tree",
             proves="a provider-error session's half-finished edit to `material.txt` is "
                    "APPLIED to the project — the tree comparison names the file that "
                    "appeared and no quarantine bundle is written",

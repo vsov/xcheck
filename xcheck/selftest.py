@@ -2320,32 +2320,44 @@ def selftest():
     print(f"{'PASS' if ok else 'FAIL'}: auditor accuracy counts only validated pool, n/a when empty (F-0015)" + ("" if ok else f" -> {o_acc[o_acc.find('auditor'):][:60]} | {o_acc_na[o_acc_na.find('auditor'):][:60]}"))
     failed += 0 if ok else 1
 
-    # F-0016: fix durability denominator = verdicts (closed|reopened), numerator = closed@0
-    def _dur_out(rows_spec):
+    # F-0016: fix durability denominator = verdicts (closed|reopened), numerator = the
+    # closures an oracle RE-OBSERVED on newer material (0.9.6, F6: `oracle.durable`). A
+    # closed record nobody re-ran is not durable however many attempts it took or how old
+    # it is — the old numerator, closed@0, is what this check asserted until 0.9.6.
+    def _dur_out(rows_spec, reobserved=()):
+        from xcheck.envelope import emit as _emit
         with tempfile.TemporaryDirectory() as td:
             audit = Path(td) / "audit"
             (audit / "findings").mkdir(parents=True)
             _put_state(audit, 
                 _ledger(*(f"| {i} | t | major | {s} | — | 2026-07-21 |\n" for i, s, a in rows_spec)),
                 encoding="utf-8", per_id={i: {"attempts": int(a)} for i, s, a in rows_spec})
+            for fid in reobserved:
+                _emit(Path(td), "state_transition", target=fid, verb="record-verdict",
+                      verdict="closed", snapshot="s1")
+                _emit(Path(td), "oracle_run", finding=fid, verdict="defect-absent",
+                      snapshot="s2")
             b = _io2.StringIO()
             with _cl2.redirect_stdout(b):
                 cmd_metrics(Path(td))
             return b.getvalue()
-    d_mix = _dur_out([("F-0001", "closed", "0"), ("F-0002", "reopened", "0"), ("F-0003", "superseded-by-class", "0")])
+    mix = [("F-0001", "closed", "0"), ("F-0002", "reopened", "0"),
+           ("F-0003", "superseded-by-class", "0")]
+    d_mix = _dur_out(mix, reobserved=("F-0001",))
     d_reop = _dur_out([("F-0001", "reopened", "0")])
     d_closed = _dur_out([("F-0001", "closed", "0")])
-    d_closed1 = _dur_out([("F-0001", "closed", "1")])
+    d_closed1 = _dur_out([("F-0001", "closed", "1")], reobserved=("F-0001",))
     # Matched on the LABEL and the NUMBER with runs of spaces collapsed: the column
     # width is layout, and an oracle that fails when a printer is re-aligned reports a
     # cosmetic change as a durability defect. A wrong number still fails.
     def _flat(s):
         return re.sub(r"[ \t]+", " ", s)
-    ok = ("fix durability (closed first pass): 50.0%" in _flat(d_mix)
-          and "fix durability (closed first pass): 0.0%" in _flat(d_reop)
-          and "fix durability (closed first pass): 100.0%" in _flat(d_closed)
-          and "fix durability (closed first pass): 0.0%" in _flat(d_closed1))
-    print(f"{'PASS' if ok else 'FAIL'}: fix durability excludes superseded, reopened=fail, closed@0=success (F-0016)" + ("" if ok else f" -> {[d_mix, d_reop, d_closed, d_closed1]}"))
+    lab = "fix durability (re-observed by oracle):"
+    ok = (f"{lab} 50.0%" in _flat(d_mix)
+          and f"{lab} 0.0%" in _flat(d_reop)
+          and f"{lab} 0.0%" in _flat(d_closed)
+          and f"{lab} 100.0%" in _flat(d_closed1))
+    print(f"{'PASS' if ok else 'FAIL'}: fix durability excludes superseded, reopened=fail, closed-but-not-re-observed=not durable, re-observed=durable (F-0016, 0.9.6)" + ("" if ok else f" -> {[d_mix, d_reop, d_closed, d_closed1]}"))
     failed += 0 if ok else 1
 
     # F-0017: metrics report total absorbed members of class findings

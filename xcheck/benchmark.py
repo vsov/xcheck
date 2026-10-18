@@ -81,8 +81,9 @@ VALUE_METRICS = (
 USEFUL_OUTCOME = {
     "confirmed_defect": "a finding that reached validation and SURVIVED it — the defect "
                         "was independently confirmed, not merely filed",
-    "durable_fix": "a finding closed on the first attempt and never reopened — a fix "
-                   "that held, not a status that moved",
+    "durable_fix": "a closed finding whose oracle RE-OBSERVED the defect absent on "
+                   "material newer than the closure's — a fix seen to hold, not a status "
+                   "that moved or a record that aged (`oracle.durable`)",
 }
 NOT_AN_OUTCOME = ("canonical transitions (activity: a session that moved a record moved "
                   "a record, which is not the same as being right)",
@@ -195,8 +196,11 @@ def run_provenance(target, conf, policy_digest=None):
     out = {
         "target": str(path),
         "subject_commit": state_mod.subject_commit(path) if path.exists() else UNMEASURED,
-        "subject_manifest": (state_mod.subject_manifest(path) if path.exists()
-                             else UNMEASURED),
+        # 0.9.6 (F4): None from the digest is UNMEASURED, never a value; the scheme rides
+        # beside it, because a scheme-1 and a scheme-2 digest of one tree differ by rule.
+        "subject_manifest": ((state_mod.subject_manifest(path) or UNMEASURED)
+                             if path.exists() else UNMEASURED),
+        "subject_manifest_scheme": state_mod.MANIFEST_SCHEME,
         "policy_digest": policy_digest or UNMEASURED,
         "model_identity": str(conf.get("auditor_cmd", "") or "").strip() or UNMEASURED,
         "route_table_digest": route_table_digest(),
@@ -204,6 +208,19 @@ def run_provenance(target, conf, policy_digest=None):
     }
     out["incomparable_because"] = sorted(k for k, v in out.items() if v == UNMEASURED)
     return out
+
+
+def material_comparable(a, b):
+    """Whether two provenance records' material digests can be compared at all — None if
+    not, with the digests' own equality otherwise. A record without
+    `subject_manifest_scheme` is scheme 1 (0.9.6, F4): the same tree has a different
+    digest under each rule, so a cross-scheme "different" says nothing about the code."""
+    da, db = a.get("subject_manifest"), b.get("subject_manifest")
+    if (a.get("subject_manifest_scheme") or 1) != (b.get("subject_manifest_scheme") or 1):
+        return None
+    if da in (None, UNMEASURED, "unknown") or db in (None, UNMEASURED, "unknown"):
+        return None
+    return da == db
 
 
 def scoreboard(reported=(), triaged=(), accepted=(), duplicates=(), closures=(),
@@ -405,52 +422,23 @@ def _percentile(values, pct):
     return ordered[index]
 
 
-#: How long a closure must stand before it is counted as a fix that HELD.
-#:
-#: PHASE 7 (sixth audit). `closed` plus `attempts == 0` was the whole test, and it proves
-#: neither half of what it claims: the attempt counter is per-record and can be reset by
-#: a rewrite, and a finding closed a minute ago has not been observed to hold — nothing
-#: has had the chance to reopen it. 14 days is the window: long enough that a subsequent
-#: audit round would have run over the same material, which is the event that reopens a
-#: closure if the fix did not hold.
-DURABILITY_WINDOW_DAYS = 14
-
-
-def _closed_long_enough(record, window, now=None):
-    """True when this closure has stood for the observation window.
-
-    A record with no `updated` date cannot be shown to have held, and is not counted —
-    the missing date is the reason, not a default.
-    """
-    from datetime import date, datetime, timedelta
-    stamp = getattr(record, "updated", None)
-    if not stamp:
-        return False
-    try:
-        closed_on = datetime.fromisoformat(str(stamp)[:10]).date()
-    except ValueError:
-        return False
-    today = now or date.today()
-    return (today - closed_on) >= timedelta(days=window)
-
-
-def useful_outcomes(state, window=None, now=None):
+def useful_outcomes(state, events=(), now=None):
     """`(count, breakdown)` — the denominator, and what it is made of.
 
     Deliberately not `len(canonical_transitions)`: that counts work done, and the question
     is what the work was worth. Both members require somebody other than the reporting
-    session to have agreed — a Verifier's validation, or a closure that held.
+    session to have agreed — a Verifier's validation, or a fix that was SEEN to hold.
 
-    PHASE 7 (sixth audit): a durable fix now requires an OBSERVATION WINDOW. `closed`
-    with `attempts == 0` says a status moved and a counter is low; it does not say a fix
-    held, and the counter can be reset by a rewrite. `window=0` reproduces the old
-    behaviour and is what the arms use to show the difference.
+    0.9.6 (F6). A durable fix is a `re-observed` one (`oracle.durable`, the predicate M2
+    also calls): a `defect-absent` oracle run on material newer than the closure's. It
+    used to be a closure older than a 14-day window, and one unchanged record became a
+    durable fix by waiting two days. `now` is accepted and IGNORED — that is the point:
+    elapsed time is not an observation.
     """
-    window = DURABILITY_WINDOW_DAYS if window is None else window
+    from xcheck.oracle import durable as is_durable
+    ev = list(events or ())
     records = list(state.findings) + list(state.class_findings)
-    durable = [r for r in records
-               if r.status == "closed" and (getattr(r, "attempts", 0) or 0) == 0
-               and _closed_long_enough(r, window, now=now)]
+    durable = [r for r in records if r.status == "closed" and is_durable(r, ev)]
     # DISJOINT, and the first version was not. `closed` is in `VALIDATION_SURVIVED`, so a
     # durable fix was counted once as a confirmed defect and again as a fix — inflating
     # the denominator, which makes every per-outcome cost look BETTER. A ground-truth
@@ -598,7 +586,7 @@ def audit_span_seconds(events):
     return (last - first).total_seconds()
 
 
-def value_report(state, events, rates=None, review_seconds=None, window=None):
+def value_report(state, events, rates=None, review_seconds=None):
     """The four metrics, priced per useful outcome. Every one refuses rather than zeroing.
 
     PHASE 12 (fifth audit). `unmeasured` is not 0 and a caption is a second claim, so each
@@ -614,7 +602,7 @@ def value_report(state, events, rates=None, review_seconds=None, window=None):
     tokens = sum(e["tokens"] for e in measured)
     durations = [float(s["duration_s"]) for s in state.sessions
                  if s.get("duration_s") is not None]
-    outcomes, breakdown = useful_outcomes(state, window=window)
+    outcomes, breakdown = useful_outcomes(state, ev)
     priced = token_rates(rates)
     coverage, token_kind = token_coverage(finished, measured)
     attested = priceable(ev)

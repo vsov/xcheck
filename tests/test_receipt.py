@@ -167,8 +167,12 @@ class TheReceiptIsBoundToTheCharter(unittest.TestCase):
              "changed a limit and nothing else"),
             ("protocol-no-progress", "Auditor", self.AUDITOR_CHARTER, [],
              "moved nothing at all"),
+            ("stop-claimed", "Auditor", self.AUDITOR_CHARTER,
+             [{"event": "session_finished", "session_id": "s", "outcome": "refused",
+               "stop": {"reason": "blocked-dependency", "target": "P-16"}}],
+             "moved nothing and said why on the stop channel"),
         ]
-        print("\n  THE THREE PROTOCOL ANSWERS")
+        print("\n  THE FOUR PROTOCOL ANSWERS")
         for want, role, charter, events, why in cases:
             with self.subTest(protocol=want):
                 r = envelope.receipt(events, "s", role=role, charter=charter)

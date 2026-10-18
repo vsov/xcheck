@@ -136,7 +136,7 @@ def _is_count_key(key):
     return key in _COUNT_KEYS
 
 
-def refusals(usage):
+def refusals(usage, model_required=True):
     """Why this parsed `Usage` may not be recorded as provider truth. Empty = fine.
 
     Four classes, each with its own sentence, because an operator reading "the telemetry
@@ -152,7 +152,7 @@ def refusals(usage):
         missing model is merely a gap.
     """
     bad = usage_refusals({f: getattr(usage, f) for f in COUNT_FIELDS + LIMIT_FIELDS})
-    if not str(usage.model or "").strip():
+    if model_required and not str(usage.model or "").strip():
         bad.append("the record names no actual model, so `provider` would claim a "
                    "vendor vouched for a figure without saying what produced it")
     return bad
@@ -230,7 +230,68 @@ def _fake(got):
     return Usage(**{f: got.get(f) for f in USAGE_FIELDS})
 
 
-Adapter = namedtuple("Adapter", "name provider keys parse")
+# 0.9.6 (P1a): three more facts an adapter carries, defaulted for the two that predate
+# them. `stream` — the PARENT reads usage from the child's top-level event stream and
+# writes the sidecar itself (`envelope.telemetry`), so no path reaches the child and no
+# mount is needed under `container`. `hosts` — what the egress allowlist must permit.
+# `auth_env` — the environment NAMES the provider authenticates with; values are never
+# read here.
+Adapter = namedtuple("Adapter", "name provider keys parse stream hosts auth_env")
+Adapter.__new__.__defaults__ = (False, (), ())
+
+
+# ----------------------------------------------------- the Codex `exec --json` stream
+
+# The event shapes `codex exec --json` writes, one JSON object per line (codex-cli
+# 0.162.1; checked offline against the real binary 2026-10-17 for `thread.started`,
+# `turn.started`, `error`, `item.completed`, and against a live session in phase 9 for
+# `turn.completed`). Only TOP-LEVEL lines are events: an agent message or a tool's output
+# arrives JSON-escaped INSIDE an `item.*` event, so a forged `turn.completed` in what the
+# agent printed is a string in a field, never a line of its own.
+STREAM_USAGE_KEYS = ("input_tokens", "cached_input_tokens", "output_tokens")
+
+
+def stream_usage(text):
+    """The canonical usage object a Codex event stream supports, or None.
+
+    None when no `turn.completed` carried usage — NOT MEASURED, never zero. Usage is
+    summed over every `turn.completed` (one per turn); a summed cumulative figure could
+    only over-count, which is the safe direction for a ceiling. The stream names no
+    model, so `model` stays None and the route stays `unattested`: the label `provider`
+    here vouches for the counts, not for which model produced them.
+    """
+    thread, turns, failed, totals = None, 0, None, dict.fromkeys(STREAM_USAGE_KEYS, 0)
+    for line in (text or "").splitlines():
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            ev = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(ev, dict) or not isinstance(ev.get("type"), str):
+            continue
+        kind = ev["type"]
+        if kind == "thread.started" and isinstance(ev.get("thread_id"), str):
+            thread = ev["thread_id"]
+        elif kind == "turn.failed":
+            err = ev.get("error")
+            failed = str(err.get("message") if isinstance(err, dict) else err)[:200]
+        elif kind == "turn.completed" and isinstance(ev.get("usage"), dict):
+            got = ev["usage"]
+            if usage_refusals({k: got.get(k) for k in STREAM_USAGE_KEYS}):
+                return None                    # one unbelievable turn spoils the sum
+            turns += 1
+            for k in STREAM_USAGE_KEYS:
+                totals[k] += got.get(k) or 0
+    if not turns:
+        return None
+    return {"provider": "openai", "model": None, "request_id": thread,
+            "tokens_input": totals["input_tokens"],
+            "tokens_cache": totals["cached_input_tokens"],
+            "tokens_output": totals["output_tokens"],
+            "tokens_total": totals["input_tokens"] + totals["output_tokens"],
+            "stop_reason": f"turn.failed: {failed}" if failed else "completed"}
 
 ADAPTERS = {
     "codex": Adapter("codex", "openai", (
@@ -241,6 +302,12 @@ ADAPTERS = {
         "reasoning_effort", "effort"),
         _codex),
     "fake": Adapter("fake", "fake", USAGE_FIELDS, _fake),
+    # The parent-parsed stream: the object `stream_usage` builds already speaks the
+    # canonical names, so it is read like the fake's.
+    "codex-stream": Adapter("codex-stream", "openai",
+                            STREAM_USAGE_KEYS + ("thread_id",), _fake, stream=True,
+                            hosts=("api.openai.com",),
+                            auth_env=("OPENAI_API_KEY", "CODEX_API_KEY")),
 }
 
 # Every vendor key any adapter reads. The structural test uses this as its needle set:
@@ -309,7 +376,7 @@ def read(adapter, obj):
     except (TypeError, ValueError, AttributeError) as e:      # pragma: no cover
         name = adapter.name if adapter is not None else "alias"
         return None, [f"the {name} adapter could not read this object — {e}"]
-    bad = refusals(usage)
+    bad = refusals(usage, model_required=not getattr(adapter, "stream", False))
     return (None, bad) if bad else (usage, [])
 
 

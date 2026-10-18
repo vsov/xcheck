@@ -33,7 +33,8 @@ from xcheck.courier import courier_commit, dirty_paths, head_baseline_paths
 from xcheck import retention
 from xcheck import routing
 from xcheck.state import (SUBJECT_COMMIT_ENV, StateError, controller_commit,
-                          git_head, load_state, subject_manifest)
+                          git_head, load_state, material_identity,
+                          BOOKKEEPING_FILES, BOOKKEEPING_PREFIXES)
 from xcheck import ledger
 from xcheck.util import (CONF_DEFAULTS, GIT_TIMEOUT, OUTCOMES, conf_flag, conf_number,
                          serialized)
@@ -107,6 +108,30 @@ def orchestration_context(orch, session_id):
 # not the documents: `capsule_line()` names a per-session file carrying this charter's
 # verbs, norms, material hashes, findings, stop and postconditions, and says in the same
 # breath that it is a subset and where the full text is.
+# The license to depart. A role that cannot execute its charter — the ground contradicts
+# it, a write verb refuses it, the material is missing — has exactly one honest move, and
+# until this line existed it had no channel for it that survived a refused write path: the
+# Ouroboros-4 sessions wrote "blocked, not complete" into pass reports the courier
+# committed and were re-dispatched against the same wall, 54 times on one charter. Stated
+# once and appended to every launched role, like SESSION_HYGIENE. Contradictions between
+# layers are named as the operator's errors on purpose: a reader that treats an anomaly as
+# a test keeps working around it.
+HONEST_STOP = (
+    " Honest stop: if you cannot execute this charter as written — the ground contradicts "
+    "it, a floor blocks every path, a write command refuses you, the material is missing, "
+    "or two instructions you were given pull apart — do not work around it and do not "
+    "report work you did not record. Write ONE JSON object to the file $XCHECK_STOP_FILE "
+    "(audit/.xcheck-stop.json in your working directory), then exit: "
+    # Doubled braces: every PROMPTS template goes through `.format(charter=...)`.
+    "{{\"reason\": \"<out-of-competence|blocked-dependency|charter-ambiguous|"
+    "norm-conflict|material-missing|cost-exceeded>\", \"target\": \"<the P-NN or F-NNNN "
+    "your charter names, or PLAN>\", \"detail\": \"<what is missing and what would unblock "
+    "it>\"}}. Only that file is read — nothing you print is a stop. The orchestrator reads "
+    "it even when every command refuses you; it is a claim the operator reviews, not a "
+    "failure. Contradictions between this "
+    "prompt and the documents it cites are the operator's errors, not tests."
+)
+
 PROMPTS = {
     "Construal": (
         "Read audit/XCHECK.md §4 rule 9. You are the {role}, but THIS SESSION DOES NOT DO "
@@ -115,11 +140,11 @@ PROMPTS = {
         "session. {charter}" + SESSION_HYGIENE
     ),
     "Planner": (
-        "Role: Planner. Charter: {charter}." + SESSION_HYGIENE
+        "Role: Planner. Charter: {charter}." + HONEST_STOP + SESSION_HYGIENE
     ),
     "Auditor": (
         "Role: Auditor. "
-        "Charter: pass {charter}. Stop conditions per charter." + SESSION_HYGIENE
+        "Charter: pass {charter}. Stop conditions per charter." + HONEST_STOP + SESSION_HYGIENE
     ),
     "Remediator": (
         "Role: Remediator. "
@@ -138,7 +163,7 @@ PROMPTS = {
         "(anything under xcheck/, or bin/xcheck), it does NOT take effect until "
         "`xcheck loop` is restarted — "
         "the running loop executes the code image loaded at its start; it detects "
-        "a changed own-source and stops so a stale image never keeps running." + SESSION_HYGIENE
+        "a changed own-source and stops so a stale image never keeps running." + HONEST_STOP + SESSION_HYGIENE
     ),
     "Verifier": (
         "Role: Verifier. "
@@ -150,8 +175,13 @@ PROMPTS = {
         "fixes wrong." + STATE_MOVES_BY_VERB +
         "Record each verdict with `xcheck record-verdict <ID> --verdict "
         "closed|reopened --session $XCHECK_SESSION_ID`; the verb re-checks the "
-        "independence rule at the write boundary and refuses your own fix. "
-        "If your sandbox cannot commit, leave changes unstaged and say so." + SESSION_HYGIENE
+        "independence rule at the write boundary and refuses your own fix. A `closed` "
+        "verdict needs evidence: an `oracle_run` of the finding's ## Oracle that was "
+        "defect-present before the fix and is defect-absent on the material now (the "
+        "operator runs `xcheck run-oracle <ID>`, container only), or "
+        "`--evidence manual:\"<what you checked, and how>\"`, which is recorded as "
+        "MANUAL evidence and never counts as a durable fix. "
+        "If your sandbox cannot commit, leave changes unstaged and say so." + HONEST_STOP + SESSION_HYGIENE
     ),
 }
 
@@ -838,7 +868,7 @@ def container_capabilities(conf, workdir=None, out_dir=None, source=None, verifi
                          f"{', '.join(_allowlist_or_empty(conf))}"),
         "egress_allowlist": list(_allowlist_or_empty(conf)),
         "home": f"{CONTAINER_HOME} (tmpfs, empty — not the operator's HOME)",
-        "source_mount": f"{source or '<project>'} -> {CONTAINER_SRC} (read-only)",
+        "source_mount": f"{source or '<seeded clone>'} -> {CONTAINER_SRC} (read-only)",
         "writable": [f"{workdir or '<disposable clone>'} -> {CONTAINER_WORK}",
                      f"{out_dir or '<session output>'} -> {CONTAINER_OUT}"],
         "cpus": cpus,
@@ -1022,6 +1052,9 @@ def child_environment(conf, extra=None):
     # read the terms of its own audit, let alone go looking for a way to write them.
     from xcheck.policy import OPERATOR_PROFILE_ENV
     env.pop(OPERATOR_PROFILE_ENV, None)
+    # 0.9.6 (F3): where the stop channel is. Relative to the child's working directory,
+    # so the same value is right on the host and under the container's `/work`.
+    env["XCHECK_STOP_FILE"] = envelope.STOP_FILE
     env.update(extra or {})
     return env
 
@@ -1094,6 +1127,9 @@ def classify_outcome(rc, timed_out=False, cancelled=False, log_text="", stalled=
         return "stalled"
     if timed_out:
         return "timeout"
+    # The stop channel is NOT read here: since 0.9.6 (F3) it is a file, and `settle`
+    # makes a session that wrote one `refused` whatever its rc. Text in the log is never
+    # a stop — a source file the session cat'ed used to be indistinguishable from one.
     if rc == 0:
         return "ok"
     low = (log_text or "").lower()
@@ -1592,6 +1628,7 @@ class Sandbox:
         self._start_broker()
         if not self.profile.isolating:
             print(f"sandbox: {self.profile.name} — {self.profile.summary}")
+            self._clear_stop_channel()
             return self.workdir
         head = _git(self.project, ["rev-parse", "HEAD"])
         if head.returncode != 0:
@@ -1616,7 +1653,18 @@ class Sandbox:
                 f"none is the failure this profile exists to prevent.")
         self.workdir = wt
         print(f"sandbox: {self.profile.name} at {wt}")
+        self._clear_stop_channel()
         return wt
+
+    def _clear_stop_channel(self):
+        """A stop file present BEFORE the child runs is not the child's: a committed one
+        would otherwise be read as every session's stop, and halt the audit from the
+        subject's own tree. Removed, and said."""
+        stale = Path(self.workdir) / envelope.STOP_FILE
+        if os.path.lexists(stale):
+            envelope.read_stop_file(self.workdir)        # removes it, whatever it is
+            print(f"sandbox: removed {envelope.STOP_FILE}, present before the session "
+                  f"started — a stop is read only from the session that writes it")
 
     def _checkout(self, wt, head):
         """The disposable tree. A linked `git worktree` for the process-level profiles;
@@ -1672,7 +1720,11 @@ class Sandbox:
             return list(cmd)
         _image, self.image_waiver = container_image_ref(conf)   # refuses if unpinned
         self.container_name = f"xcheck-{os.urandom(6).hex()}"
-        return container_argv(cmd, conf, self.workdir, self.out_dir, self.project, env,
+        # 0.9.6 (F4): `/src` is the SEEDED clone, read-only — not the live project. The
+        # live tree carries git-ignored files the seed never presents and the material
+        # digest never covers; mounting it showed the agent material its record could
+        # not name. `/src` and `/work` are now one tree, the read-only view of the two.
+        return container_argv(cmd, conf, self.workdir, self.out_dir, self.workdir, env,
                               name=self.container_name, broker=self.broker)
 
     def _seed(self, wt):
@@ -1738,7 +1790,8 @@ class Sandbox:
         # the patch cannot describe two different sets of changes.
         return patch, tuple(changed_paths(self.workdir, self.base))
 
-    def quarantine(self, outcome, session_id=None, head_at_capture=None, charter=None):
+    def quarantine(self, outcome, session_id=None, head_at_capture=None, charter=None,
+                   role=None):
         """File a non-`ok` session's work where a human can find it. Nothing is applied.
 
         The bundle lives under `audit/quarantine/` rather than a temp dir, because a
@@ -1754,15 +1807,27 @@ class Sandbox:
                   f"there is nothing to quarantine.")
             return None
         patch, paths = cap
+        # The ROLE, not the sandbox's label: a parallel pass's sandbox is `Auditor-P-01`
+        # (it names the worktree), and its bundle must read the same as a sequential one.
+        role = role or self.role
         digest = hashlib.sha256(patch.encode("utf-8")).hexdigest()
         stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-        bundle = (self.project / "audit" / QUARANTINE_DIRNAME /
-                  f"{stamp}-{self.role.lower()}-{outcome}")
-        bundle.mkdir(parents=True, exist_ok=True)
+        root = self.project / "audit" / QUARANTINE_DIRNAME
+        root.mkdir(parents=True, exist_ok=True)
+        # Never into an existing bundle: two parallel passes refused in the same second
+        # would otherwise share a directory, and the second patch would replace the first.
+        name, n = f"{stamp}-{role.lower()}-{outcome}", 1
+        while True:
+            bundle = root / (name if n == 1 else f"{name}-{n}")
+            try:
+                bundle.mkdir()
+                break
+            except FileExistsError:
+                n += 1
         (bundle / "session.patch").write_text(patch, encoding="utf-8")
         manifest = {
             "outcome": outcome,
-            "role": self.role,
+            "role": role,
             "charter": charter or "",
             "session_id": session_id,
             "patch_digest": digest,
@@ -1775,11 +1840,11 @@ class Sandbox:
         (bundle / "manifest.json").write_text(
             json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         (bundle / "README.md").write_text(QUARANTINE_README.format(
-            outcome=outcome, role=self.role, digest=digest,
+            outcome=outcome, role=role, digest=digest,
             head=head_at_capture or "(unknown)",
             paths="\n".join(f"  - {p}" for p in paths) or "  (none)",
             rel=bundle.relative_to(self.project)), encoding="utf-8")
-        print(f"quarantine: the {self.role} session ended `{outcome}` — its changes were "
+        print(f"quarantine: the {role} session ended `{outcome}` — its changes were "
               f"NOT applied to the project.")
         print(f"  bundle: {bundle.relative_to(self.project)} "
               f"({len(paths)} path(s), sha256 {digest[:12]}…)")
@@ -1963,8 +2028,8 @@ def build_cmd(conf, role, prompt, sidecar=None, route=None):
     # the parent believes is one the subject was never handed. A template with no
     # `{sidecar}` gets nothing, and provider telemetry for that role is simply
     # unmeasured — which is the honest answer, not zero.
-    parts = [p.replace("{sidecar}", str(sidecar)) for p in parts] if sidecar else [
-        p for p in parts if "{sidecar}" not in p or True]
+    if sidecar:
+        parts = [p.replace("{sidecar}", str(sidecar)) for p in parts]
     # PHASE 12 (fourth audit): `{token_cap}` carries the HARD per-dispatch ceiling into
     # the invocation, before the model runs. A ceiling compared against a measured mean
     # after the fact is a forecast — the audit's exact complaint — and this is the only
@@ -2142,30 +2207,8 @@ class RunResult(int):
                 f"revision {self.state_revision_before}->{self.state_revision_after})")
 
 
-# What the ORCHESTRATOR writes on the session's behalf, on every single run: the log,
-# the collected patch beside it, and the session's own row in `state.json`. None of it is
-# the session's effect on the project, and all of it moves HEAD, because the courier
-# commits it. Naming the bookkeeping is what makes "did this session change anything?"
-# answerable at all — without this list the answer is `True` for every session ever run,
-# which is a gate that has stopped asking.
-BOOKKEEPING_PREFIXES = (
-    "audit/orchestrator-logs/",     # the session log, and the collected patch beside it
-    # PHASE 13: the context capsule, written BY THE ORCHESTRATOR before the child starts.
-    # It is the brief the session was handed, never something the session did — and
-    # forgetting it here made `effects_applied` True for every dispatch, including a
-    # cancelled one that applied nothing. Caught by the cancelled-session arm, which is
-    # what that arm is for.
-    "audit/capsules/",
-)
-BOOKKEEPING_FILES = (
-    "audit/state.json",             # asked separately, below — it holds BOTH kinds
-    "audit/events.jsonl",           # the envelope journal: an append per dispatch/finish
-    # PHASE 14: the log manifest. It gains a row per session for a file the ORCHESTRATOR
-    # wrote outside the tree, so like the log itself it is bookkeeping — and like the
-    # capsule in phase 13, forgetting it made every session look as though it had changed
-    # the project. Two phases, the same lesson, the same two arms catching it.
-    "audit/logs-manifest.jsonl",
-)
+# BOOKKEEPING_PREFIXES / BOOKKEEPING_FILES live in `state` since 0.9.6 (F4): the material
+# digest subtracts the same list, and one list cannot drift from itself.
 
 
 def _material_paths(project, head_before, head_after, pre_dirty):
@@ -2326,6 +2369,27 @@ def _session_result(project, code, outcome, *, sandbox, pre_dirty, pre_state, re
                          if quarantined else None))
 
 
+def prepare_capsule(project, role, charter, session_id):
+    """Build and write this dispatch's capsule; its digest, or None with the reason printed.
+
+    THE capsule step, for both dispatchers (0.9.6, F5: the parallel path wrote none, so
+    its sessions read the whole corpus and their envelopes said `unknown`). A capsule
+    that cannot be built must not stop a session: the corpus is still there and the
+    prompt still names it. The envelope records `unknown`, the difference between
+    "briefed with this" and "we do not know"."""
+    try:
+        from xcheck import capsule as capsule_mod
+        cap = capsule_mod.build(load_state(project / "audit"), project, role, charter or "")
+        capsule_mod.write(project, session_id, cap)
+        return capsule_mod.capsule_digest(cap)
+    except (StateError, OSError) as e:
+        why = (e if os.path.lexists(project / "audit" / "state.json")
+               else "no state.json until the plan is migrated")
+        print(f"  ! context capsule not generated ({why}); the session reads the "
+              f"full corpus instead")
+        return None
+
+
 def capsule_line(session_id):
     """The sentence that replaced 84,610 bytes of mandatory reading.
 
@@ -2409,6 +2473,53 @@ def prepare_logs(project, conf, stem, dry_run=False):
     return logs, logs / f"{stamp}-{stem}.log"
 
 
+def contained_sidecar_problem(conf, role, profile):
+    """0.9.6 (P1a): why `{sidecar}` cannot work for this dispatch, or None.
+
+    Under `container` the role command runs inside the image, and `{sidecar}` expands to a
+    HOST path no mount reaches (`/src`, `/work`, `/out` only — the sidecar directory is
+    kept off the container on purpose). A wrapper told to write there writes nothing, and
+    the session is silently unmeasured. Refused at the launch, not in `build_cmd`, which
+    also builds previews (`a-placeholder-legal-for-one-caller`)."""
+    tmpl = str((conf or {}).get(f"{role.lower()}_cmd") or "")
+    if getattr(profile, "name", None) != "container" or "{sidecar}" not in tmpl:
+        return None
+    return (f"{role.lower()}_cmd carries `{{sidecar}}`, which names a host path the "
+            f"container cannot reach (only /src, /work and /out are mounted). Declare "
+            f"`telemetry_adapter=codex-stream` and drop `{{sidecar}}`: the parent reads "
+            f"usage from the CLI's own event stream and writes the sidecar itself.")
+
+
+def image_cli_probe(conf, exe, timeout=60):
+    """`(ok, detail)` — does `exe` run inside the pinned image? For `xcheck doctor`.
+
+    `<image> <exe> --version` under `--network=none`, `--rm`, every capability dropped:
+    the IMAGE's binary, never the host's and never the subject's, so this is not the
+    F-0098 interview. `(None, why)` when the image is unpinned or docker cannot answer —
+    unverified, which is not a pass."""
+    try:
+        image, _waiver = container_image_ref(conf)
+    except SystemExit as e:
+        return None, str(e).splitlines()[0]
+    ok, detail = backend_probe("docker")
+    if not ok:
+        return None, detail
+    argv = ["docker", "run", "--rm", "--network=none", "--cap-drop", "ALL",
+            "--security-opt", "no-new-privileges", "--entrypoint", exe, image,
+            "--version"]
+    try:
+        p = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return False, f"`{exe} --version` in {image} did not answer in {timeout}s"
+    except OSError as e:
+        return None, f"docker could not be run: {e}"
+    said = (p.stdout or p.stderr or "").strip().splitlines()[:1]
+    if p.returncode == 0:
+        return True, f"`{exe} --version` in the image: {said[0] if said else '(silent)'}"
+    return False, (f"`{exe} --version` in {image} exited {p.returncode}"
+                   + (f": {said[0][:160]}" if said else ""))
+
+
 def prepare_launch(conf, role, child_prompt, session_id, profile, log_path, route):
     """THE build: one per dispatch, with the sidecar and the route.
 
@@ -2422,9 +2533,116 @@ def prepare_launch(conf, role, child_prompt, session_id, profile, log_path, rout
     # through the environment — `child_environment` copies `XCHECK_*` wholesale, so an
     # env var would hand the agent the very file it must not be able to write.
     sidecar_path = envelope.sidecar_path(log_path, session_id)
+    why = contained_sidecar_problem(conf, role, profile)
+    if why:
+        raise SystemExit(f"refusing to launch {role}: {why}")
     cmd = build_cmd(conf, role, child_prompt, sidecar=sidecar_path, route=route)
     refuse_uncontained(cmd, profile, role)
     return LaunchPlan(cmd=cmd, sidecar_path=sidecar_path)
+
+
+def _material(project):
+    """The scheme-2 material digest for a dispatch record, saying why when there is none."""
+    digest, why = material_identity(project)
+    if digest is None:
+        print(f"provenance: subject_manifest is `unknown` — {why}")
+    return digest
+
+
+class SessionNotRecorded(SystemExit):
+    """The child ran and its work is preserved, but its record could not be written.
+
+    A SystemExit so the CLI prints the addressed sentence and exits non-zero instead of a
+    traceback; the record stays open, and the next dispatch closes it as `crash`
+    (`envelope.store` abandons open sessions it does not own)."""
+
+
+def settle(sandbox, run, *, on_ok, finish, quarantine, window):
+    """THE one way a dispatched child's sandbox is resolved — for BOTH dispatchers.
+
+    0.9.6 (F1/F2). The sequential and the parallel path each had their own version of
+    this sequence and each lost work a different way: sequentially, an exception after
+    the child (a malformed stop raised TypeError) skipped the quarantine and the finish,
+    and the `finally` then deleted the worktree with the partial work in it; in parallel,
+    every non-`ok` outcome returned before anything captured the work, and an exception
+    in the finish skipped `leave()` and leaked the worktree. One function, one order:
+
+      1. `run()` -> (rc, outcome, elapsed). ANY exception it raises becomes outcome
+         `crash` with a note naming it — the child has run, so its work is evidence.
+      2. inside `window()` (the merge lock): `ok` -> `on_ok()`; `cancelled` -> nothing is
+         applied, and nothing is filed either (a cancelled session has no verdict); any
+         other outcome -> `quarantine(outcome)`, BEFORE teardown, so the bundle exists
+         while the sandbox still does. An `on_ok()` that raises (a refused merge) is
+         quarantined too, then re-raised once the record is written.
+      3. `finish(rc, outcome, elapsed, note, stop, stop_refusals)` writes the record; then `sandbox.leave()`,
+         in a `finally`, whatever `finish` did.
+
+    A `finish` that raises (a full disk under the store) leaves the bundle on disk and
+    raises SessionNotRecorded naming it. Returns (rc, outcome, elapsed, result, bundle,
+    error): `error` is the exception step 1 absorbed, for a caller with a more specific
+    sentence to print for it (a command that could not be spawned)."""
+    rc, outcome, elapsed = 1, "crash", 0.0
+    notes, result, bundle, error, deferred = [], None, None, None, None
+
+    def file_it(label):
+        try:
+            return quarantine(label)
+        except Exception as e:                    # the bundle failed; say so, carry on
+            notes.append(f"quarantine failed: {type(e).__name__}: {e}")
+            return None
+
+    stop, stop_bad = None, []
+    try:
+        try:
+            rc, outcome, elapsed = run()
+        except (Exception, SystemExit) as e:
+            # SystemExit too: some stops inside the run are deliberate (`egress_lapsed`),
+            # and they still end a child whose work is evidence. Re-raised after the record.
+            error = e
+            if isinstance(e, SystemExit):
+                deferred = e
+            rc, outcome = 1, "crash"
+            notes.append(f"finalize-error: {type(e).__name__}: {e}")
+        # The stop file, read and REMOVED before anything captures the work — it is a
+        # message to the parent, not part of the patch. A session that wrote one stopped:
+        # its work is not applied, even at rc 0, and even when the file is malformed
+        # (applying work because the parent could not read the reason would turn a
+        # malformed refusal into an accepted result). A cancelled, timed-out or stalled
+        # session keeps that outcome: it was ended by the parent, not by its own stop.
+        present, stop, stop_bad = envelope.read_stop_file(getattr(sandbox, "workdir", None))
+        if present and outcome not in ("cancelled", "timeout", "stalled"):
+            outcome = "refused"
+        with window():
+            if outcome == "ok":
+                try:
+                    result = on_ok()
+                except (Exception, SystemExit) as e:
+                    # A refused apply (a merge outside audit/, a stream the patch would
+                    # rewrite): the work was NOT applied, so the record must not say ok.
+                    deferred, outcome = e, "refused"
+                    notes.append(f"not applied: {type(e).__name__}: {e}")
+                    bundle = file_it("refused")
+            elif outcome == "cancelled":
+                print("cancelled: the session's changes were NOT applied to the project — "
+                      "a cancelled session is a session with no verdict.")
+            else:
+                bundle = file_it(outcome)
+    finally:
+        try:
+            finish(rc, outcome, elapsed, "; ".join(notes) or None, stop, stop_bad)
+        except SessionNotRecorded:
+            raise
+        except Exception as e:
+            where = bundle or "(no bundle: the session changed nothing, or filing failed)"
+            raise SessionNotRecorded(
+                f"stop: the session ran but its record could not be written "
+                f"({type(e).__name__}: {e}). Its work is preserved at {where}; the record "
+                f"is left open, and the next dispatch closes it as `crash`.") from e
+        finally:
+            sandbox.leave()                       # EVERY path
+    if deferred is not None:
+        raise deferred
+    return rc, outcome, elapsed, result, bundle, error
 
 
 def finish_session(conf, rec, rc, outcome, elapsed, head_after, log_path, *,
@@ -2611,23 +2829,8 @@ def run_session(project: Path, conf, role, charter, dry_run=False, lock=None, co
         # seeded from the project tree and a file outside it is one the child cannot
         # open. It is untracked and deliberately not ignored, so the seed's
         # `--exclude-standard` copy reaches it (the F-0093 trap, in the other direction).
-        capsule_digest = None
-        if not dry_run:
-            try:
-                from xcheck import capsule as capsule_mod
-                cap = capsule_mod.build(load_state(project / "audit"), project, role,
-                                        charter or "")
-                capsule_mod.write(project, session_id, cap)
-                capsule_digest = capsule_mod.capsule_digest(cap)
-            except (StateError, OSError) as e:
-                # A capsule that cannot be built must not stop a session: the corpus is
-                # still there and the prompt still names it. The envelope records
-                # `unknown`, the difference between "briefed with this" and "we do not
-                # know".
-                why = (e if os.path.lexists(project / "audit" / "state.json")
-                       else "no state.json until the plan is migrated")
-                print(f"  ! context capsule not generated ({why}); the session reads the "
-                      f"full corpus instead")
+        capsule_digest = None if dry_run else prepare_capsule(project, role, charter,
+                                                                session_id)
         child_prompt = prompt + (capsule_line(session_id) if capsule_digest else "") \
             + orchestration_context(orch, session_id)
         # THE build, through `prepare_launch` — the one both dispatchers call. Every
@@ -2690,11 +2893,12 @@ def run_session(project: Path, conf, role, charter, dry_run=False, lock=None, co
                 # never the child — so the subject commit is the ambient one, and it is
                 # the value handed to the child above.
                 subject_commit=head_before,
-                subject_manifest=subject_manifest(project),
+                subject_manifest=_material(project),
                 controller_commit=controller_commit(),
                 capsule_digest=capsule_digest,
                 trust_level=trust,
-                route=route)
+                route=route,
+                charter_targets=envelope.dispatch_targets(role, charter or ""))
             envelope.store(project, env_rec, event="session_dispatched", live=live)
             # The one component of the embargo key that is not already in the dispatch
             # record and cannot go into it: `state.sessions[]` is a closed schema, and
@@ -2707,9 +2911,13 @@ def run_session(project: Path, conf, role, charter, dry_run=False, lock=None, co
                           charter_slice=_charter_slice_now(project, charter))
         sandbox = Sandbox(project, profile, role, logs, conf=conf)
         quarantined = None
+        timings = {}
+        final = {}
         try:
             sandbox.enter()                        # fails CLOSED; never degrades to none
-            try:
+
+            def run():
+                nonlocal env_rec
                 # The container profile is the only one that changes what is LAUNCHED;
                 # every other profile gets `cmd` back unchanged.
                 launch = sandbox.wrap(cmd, conf, child_env)
@@ -2719,7 +2927,6 @@ def run_session(project: Path, conf, role, charter, dry_run=False, lock=None, co
                         workdir=sandbox.workdir, conf=conf, verified=backend)
                 if sandbox.image_waiver:
                     print(f"containment: {sandbox.image_waiver}")
-                timings = {}
                 rc, outcome, elapsed = run_child(
                     launch, sandbox.workdir, log_path, child_env, conf, lock,
                     profile=profile, timings=timings,
@@ -2754,95 +2961,106 @@ def run_session(project: Path, conf, role, charter, dry_run=False, lock=None, co
                 if route_refusal and outcome == "ok":
                     print(f"route: REFUSED before the patch — {route_refusal}")
                     outcome = "refused"
-                with serialized():                 # merge window 2: the patch lands
-                    # 0.9.1 phase 3 (P0 #3). This was `if outcome != "cancelled"`, so a
-                    # provider-error, timeout, crash, refused or blocked session landed
-                    # its half-finished changes in the project — a crashed session
-                    # silently modifying the repository under audit, and the root of the
-                    # retry blocker. Only `ok` applies. The rest is not DISCARDED (a
-                    # half-finished remediation can still be worth having); it is handed
-                    # to a human intact.
-                    if outcome == "ok":
-                        sandbox.collect()
-                    elif outcome == "cancelled":
-                        print("cancelled: the session's changes were NOT applied to the "
-                              "project — a cancelled session is a session with no verdict.")
-                    else:
-                        quarantined = sandbox.quarantine(
-                            outcome, session_id=session_id, head_at_capture=head_before,
-                            charter=charter)
-            finally:
-                sandbox.leave()                    # BOTH paths: success and failure
-            # Closed AFTER collect(), so the session's own writes are already in the
-            # tree and the envelope is finalised on top of them rather than being
-            # overwritten by the patch that carries them back.
-            with serialized():
-                retention.record(project, session_id, log_path,
-                                 sha256=envelope.sha256_file(log_path), role=role)
-                # PHASE 13: a session whose ACTUAL model disagrees with its planned route
-                # is recorded as a protocol violation rather than losing the session. The
-                # work may be real; the ROUTE claim about it is not, and a record that
-                # kept the label would be the number a cost comparison rests on.
-                try:
-                    env_rec = finish_session(conf, env_rec, rc, outcome, elapsed,
-                                              git_head(project), log_path,
-                                              sandbox_seed=getattr(sandbox, "base", None),
-                                              # PHASE 11 (fourth audit): the adapter the
-                                              # OPERATOR declared, resolved once here and
-                                              # never inferred from `cmd`. An unknown name is
-                                              # a refusal at load, not a fallback: parsing one
-                                              # vendor's numbers with another's key names
-                                              # produces figures that are wrong silently.
-                                              # PHASE 13: what xcheck put in the argv. The
-                                              # provider says what actually ran; `finish`
-                                              # refuses to record a route the two disagree on.
-                                              # The adapter is resolved inside
-                                              # `finish_session`, for both dispatchers.
-                                              planned_model=planned_model, route=route,
-                                              first_output_s=timings.get("first_output_s"),
-                                              idle_s=timings.get("idle_s"),
-                                              # Recorded so the NEXT run derives
-                                              # `activity_deadline` from measured first
-                                              # activity. Today's default is derived from
-                                              # total session duration because this figure
-                                              # did not exist — a bound guessed once may
-                                              # stay guessed forever unless the run that
-                                              # uses it also measures it.
-                                              first_activity_s=timings.get(
-                                                  "first_activity_s"),
-                                              # WHICH deadline fired, on the record. The
-                                              # outcome says a stall happened; without this
-                                              # the operator cannot tell "never started"
-                                              # from "went quiet after an hour of work".
-                                              note=timings.get("stall_note"))
-                except routing.RouteError as e:
-                    # PHASE 2 (fifth audit): `refused`, not `protocol-violation`. The
-                    # latter is a PROTOCOL answer (`envelope.PROTOCOLS`), not a session
-                    # OUTCOME (`util.OUTCOMES`), so this branch wrote a value the state
-                    # schema refuses — and the whole session record was then lost to a
-                    # StateError. It had never run: the route could not reach a child, so
-                    # no provider could disagree with it. Two enums, one field, and the
-                    # only thing that found it was dispatching a real mismatch.
-                    print(f"route: REFUSED — {e}")
-                    env_rec = envelope.finish(
-                        env_rec, rc, "refused", elapsed, git_head(project),
-                        log_path, sandbox_seed=getattr(sandbox, "base", None),
-                        adapter=_telemetry_adapter(conf),
-                        first_output_s=timings.get("first_output_s"),
-                        idle_s=timings.get("idle_s"),
-                        first_activity_s=timings.get("first_activity_s"),
-                        note=f"route attestation refused: {e}")
-                    outcome = "refused"
-                # PHASE 3 (fifth audit): when a route was planned and the session comes
-                # back UNATTESTED, say why in the one word that decides it. `unattested`
-                # on its own reads as "the provider was quiet"; the operator needs to know
-                # the difference between a machine with no telemetry configured and an
-                # agent that named a model on a channel it writes itself.
-                if route and env_rec.get("route_attestation") == routing.UNATTESTED:
-                    print(f"route: UNATTESTED — telemetry_source="
-                          f"{env_rec.get('telemetry_source') or 'none'!r}; only "
-                          f"{routing.PROVIDER_SOURCE!r} can confirm a model.")
-                envelope.store(project, env_rec, event="session_finished", live=live)
+                return rc, outcome, elapsed
+
+            def finish(rc, outcome, elapsed, note, stop=None, stop_refusals=()):
+                nonlocal env_rec
+                # Closed AFTER collect(), so the session's own writes are already in the
+                # tree and the envelope is finalised on top of them rather than being
+                # overwritten by the patch that carries them back.
+                with serialized():
+                    retention.record(project, session_id, log_path,
+                                     sha256=envelope.sha256_file(log_path), role=role)
+                    try:
+                        env_rec = finish_session(conf, env_rec, rc, outcome, elapsed,
+                                                  git_head(project), log_path,
+                                                  sandbox_seed=getattr(sandbox, "base", None),
+                                                  # PHASE 11 (fourth audit): the adapter the
+                                                  # OPERATOR declared, resolved once here and
+                                                  # never inferred from `cmd`. An unknown name is
+                                                  # a refusal at load, not a fallback: parsing one
+                                                  # vendor's numbers with another's key names
+                                                  # produces figures that are wrong silently.
+                                                  # PHASE 13: what xcheck put in the argv. The
+                                                  # provider says what actually ran; `finish`
+                                                  # refuses to record a route the two disagree on.
+                                                  # The adapter is resolved inside
+                                                  # `finish_session`, for both dispatchers.
+                                                  planned_model=planned_model, route=route,
+                                                  first_output_s=timings.get("first_output_s"),
+                                                  idle_s=timings.get("idle_s"),
+                                                  # Recorded so the NEXT run derives
+                                                  # `activity_deadline` from measured first
+                                                  # activity. Today's default is derived from
+                                                  # total session duration because this figure
+                                                  # did not exist — a bound guessed once may
+                                                  # stay guessed forever unless the run that
+                                                  # uses it also measures it.
+                                                  first_activity_s=timings.get(
+                                                      "first_activity_s"),
+                                                  # WHICH deadline fired, on the record. The
+                                                  # outcome says a stall happened; without this
+                                                  # the operator cannot tell "never started"
+                                                  # from "went quiet after an hour of work".
+                                                  note="; ".join(filter(None, (
+                                                      timings.get("stall_note"), note))) or None,
+                                                  stop=stop, stop_refusals=stop_refusals)
+                    except routing.RouteError as e:
+                        # PHASE 2 (fifth audit): `refused`, not `protocol-violation`. The
+                        # latter is a PROTOCOL answer (`envelope.PROTOCOLS`), not a session
+                        # OUTCOME (`util.OUTCOMES`), so this branch wrote a value the state
+                        # schema refuses — and the whole session record was then lost to a
+                        # StateError. It had never run: the route could not reach a child, so
+                        # no provider could disagree with it. Two enums, one field, and the
+                        # only thing that found it was dispatching a real mismatch.
+                        print(f"route: REFUSED — {e}")
+                        env_rec = envelope.finish(
+                            env_rec, rc, "refused", elapsed, git_head(project),
+                            log_path, sandbox_seed=getattr(sandbox, "base", None),
+                            adapter=_telemetry_adapter(conf),
+                            first_output_s=timings.get("first_output_s"),
+                            idle_s=timings.get("idle_s"),
+                            first_activity_s=timings.get("first_activity_s"),
+                            note=f"route attestation refused: {e}",
+                            stop=stop, stop_refusals=stop_refusals)
+                        final["outcome"] = "refused"
+                    # PHASE 3 (fifth audit): when a route was planned and the session comes
+                    # back UNATTESTED, say why in the one word that decides it. `unattested`
+                    # on its own reads as "the provider was quiet"; the operator needs to know
+                    # the difference between a machine with no telemetry configured and an
+                    # agent that named a model on a channel it writes itself.
+                    if route and env_rec.get("route_attestation") == routing.UNATTESTED:
+                        print(f"route: UNATTESTED — telemetry_source="
+                              f"{env_rec.get('telemetry_source') or 'none'!r}; only "
+                              f"{routing.PROVIDER_SOURCE!r} can confirm a model.")
+                    envelope.store(project, env_rec, event="session_finished", live=live)
+
+            # 0.9.1 phase 3 (P0 #3): only `ok` applies; every other outcome is handed to a
+            # human intact (quarantine), and 0.9.6 made that one function for both paths.
+            rc, outcome, elapsed, _applied, quarantined, error = settle(
+                sandbox, run, on_ok=sandbox.collect, finish=finish, window=serialized,
+                quarantine=lambda label: sandbox.quarantine(
+                    label, session_id=session_id, head_at_capture=head_before,
+                    charter=charter))
+            outcome = final.get("outcome", outcome)
+            if isinstance(error, OSError):
+                # F-0108: the agent CLI could not be SPAWNED. The record is closed (by
+                # `settle`); name the unrunnable command and stop cleanly.
+                print(f"stop: could not launch {role} session — {role.lower()}_cmd is not "
+                      f"runnable: {cmd[0]!r} ({error}). Fix the command in "
+                      f"audit/orchestrator.conf.")
+                return _session_result(project, 1, "crash", sandbox=None,
+                                       pre_dirty=pre_dirty, pre_state=pre_state,
+                                       quarantined=quarantined, rev_before=rev_before,
+                                       head_before=head_before, attempt=attempt,
+                                       session_id=session_id, role=role,
+                                       charter=charter)
+            if error is not None:
+                # Not a return: the courier below still commits the closed record and the
+                # bundle, exactly as it does for any other `crash`.
+                print(f"stop: the {role} session failed after it ran — {error}. Its "
+                      f"record is closed as `crash`"
+                      + (f" and its work is at {quarantined}." if quarantined else "."))
         except OSError as e:
             # F-0108: the agent CLI could not be SPAWNED (a missing/mistyped
             # executable in <role>_cmd) — subprocess.run raised before returning a

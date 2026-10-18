@@ -42,6 +42,48 @@ DECIDE_PRIORITY = [
 ]
 
 
+# What lifts a claimed stop: a transition by one of these verbs on its target — each
+# changes what the decision would dispatch for it — or the operator's own answer,
+# `xcheck resolve-stop <ID> --resolution TEXT`, which emits STOP_RESOLVED and is the only
+# thing that does. ONE table: `live_stops` clears by it and the gate hint prints from it.
+# Not here, on purpose: `file-finding` (a new record, never a stopped one), the construal
+# and catalog verbs, `render-views` (moves no record), and an `amend-pass` that changes
+# nothing, which `write._amend_pass` refuses before it can emit.
+CLEARS_STOP = {
+    "pass": ("amend-pass", "cancel-pass", "record-coverage"),
+    "finding": ("set-status", "record-refusal", "record-ruling", "block-on-norm",
+                "record-fix", "record-verdict"),
+}
+STOP_RESOLVED = "stop_resolved"
+
+
+def live_stops(events):
+    """`{target: {reason, role, session_id, detail}}` — the LIVE claimed stops.
+
+    A stop is live from the `session_finished` event that carries it (bound to that
+    session's charter targets by `envelope.bind_stop`) until either a declared
+    transition by a CLEARS_STOP verb names its target — the coverage that completes a
+    pass, an amendment or cancellation that changes it, a triage, fix, verdict or refusal
+    record on a finding — or the operator resolves it (`stop_resolved`). Anything else leaves it standing, a later
+    session that stopped again included, because nothing about the charter changed.
+    For every role: `PLAN` is the Planner's target. The caller filters by what it would
+    dispatch; this answers what is claimed."""
+    live = {}
+    for e in events:
+        kind = e.get("event")
+        if kind == "session_finished":
+            stop = e.get("stop") or {}
+            if stop.get("target") and stop.get("reason"):
+                live[stop["target"]] = {"reason": stop["reason"], "role": e.get("role"),
+                                        "session_id": e.get("session_id"),
+                                        "detail": stop.get("detail")}
+        elif e.get("target") in live and (
+                kind == STOP_RESOLVED or (kind == "state_transition" and e.get("verb") in
+                                          CLEARS_STOP["pass"] + CLEARS_STOP["finding"])):
+            live.pop(e["target"])
+    return live
+
+
 def decide(records, unchecked_passes, batch_size=8, triage_cap=0,
            plan_complete=True, refusals=None, construal=None):
     """Return (kind, detail) — `_decide_core`'s lifecycle decision, with the §4 rule 9
@@ -127,6 +169,13 @@ def _decide_core(records, unchecked_passes, batch_size=8, triage_cap=0, plan_com
         reason = (refusals or {}).get(r.id)
         if reason:
             return "stop-refusal", (r.id, reason)
+    # The same gate on a PASS. An Auditor's charter is a pass, not a finding, and its §5
+    # refusal used to live only in the prose of its report — the corpus re-dispatched one
+    # refused pass 54 times. `live_stops` derives the live ones from the stop channel.
+    for pid in unchecked_passes:
+        reason = (refusals or {}).get(pid)
+        if reason:
+            return "stop-refusal", (pid, reason)
 
     # F-0143: a `disputed` finding is an EXCEPTIONAL human halt (§3; N2 README §8) —
     # the loop "never silently works around a gate that wants a human". The prior
@@ -207,6 +256,10 @@ def _decide_core(records, unchecked_passes, batch_size=8, triage_cap=0, plan_com
     # The contradictory exists=False/plan_complete=True input the old selftest
     # pinned is not merely unchecked now, it is unrepresentable.
     if not plan_complete:
+        # 0.9.6 (F3): a Planner that stopped is not handed the same unfinished plan again.
+        reason = (refusals or {}).get("PLAN")
+        if reason:
+            return "stop-refusal", ("PLAN", reason)
         return "run-planner", None
 
     deferred = [r.id for r in records if r.status == "deferred"]
@@ -457,6 +510,10 @@ def pre_state_decision(project: Path, conf):
             f"`construal_gate=off` in audit/orchestrator.conf, run `xcheck migrate`, then "
             f"turn the gate back on.")
     kind, detail = "run-planner", None
+    from xcheck.envelope import read_events as _read_events
+    _plan_stop = live_stops(_read_events(project)).get("PLAN")
+    if _plan_stop:
+        return "stop-refusal", ("PLAN", _plan_stop["reason"]), report
     fired = _budget_stop(project, conf, empty_state("xcheck (no state yet)"), kind, detail)
     if fired:
         return fired[0], fired[1], report
@@ -551,6 +608,14 @@ def state_and_decision(project: Path, conf):
     # withdrawn record it is history, not a standing obstacle.
     live_refusals = {r.id: r.refusal.strip() for r in records
                      if r.status not in TERMINAL and (r.refusal or "").strip()}
+    # And from the stop channel — the same halt for the same reason, on whatever the
+    # stopped session was given: a queued pass, a non-terminal finding, the plan. A stop
+    # on a done pass or a closed finding is history and halts nothing.
+    from xcheck.envelope import read_events as _read_events
+    _owed = set(unchecked) | {r.id for r in records if r.status not in TERMINAL} | {"PLAN"}
+    for _target, _stop in live_stops(_read_events(project)).items():
+        if _target in _owed:
+            live_refusals.setdefault(_target, _stop["reason"])
     # The embargo: a charter whose identical previous attempts moved nothing is taken
     # OUT of the queue before the decision is made, not answered "no" afterwards.
     # `_decide_core` returns `unchecked_passes[0]` unconditionally, so a veto that only
@@ -710,9 +775,13 @@ def metrics_report(state, events, independence=None):
     survived = [r for r in pool if r.status in VALIDATION_SURVIVED]
 
     # --- M2 fix durability: of findings that reached a Verifier VERDICT, the share
-    # closed on the FIRST attempt. Measured against DURABILITY_BASELINE_PCT.
+    # whose fix was SEEN to hold — `re-observed`, by `oracle.durable`, the one predicate
+    # the benchmark also calls (0.9.6, F6). It was "closed on the first attempt", which a
+    # counter reset buys and nothing re-observes. Measured against DURABILITY_BASELINE_PCT,
+    # which was set under the old rule: the two are not comparable, and say so below.
+    from xcheck.oracle import durable as _durable
     reached = [r for r in records if r.status in ("closed", "reopened")]
-    first_pass = [r for r in reached if r.status == "closed" and r.attempts == 0]
+    first_pass = [r for r in reached if r.status == "closed" and _durable(r, ev)]
     durability = _rate(len(first_pass), len(reached))
 
     # --- M3 reopen rate. A DIFFERENT denominator from durability on purpose: every

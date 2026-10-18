@@ -20,7 +20,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from tests.harness import needs_live_corpus, REPO, xcheck_submodule
+from tests.harness import needs_live_corpus, needs_repo_file, REPO, xcheck_submodule
 
 routing = xcheck_submodule("routing")
 envelope = xcheck_submodule("envelope")
@@ -444,22 +444,29 @@ class HistoricalRouteFiguresAreLabels(unittest.TestCase):
                          "history gained an attestation nothing could have produced")
 
 
-@needs_live_corpus
+# Three of these four grade an INTERNAL document (`docs/` is not exported), and one reads
+# the corpus. Each is gated on its own subject, so a skip names what is actually missing.
+AB_PROTOCOL_WHY = "the A/B protocol is an internal document and is not exported"
+
+
 class ThePreRegisteredProtocolExistsAndIsUnrun(unittest.TestCase):
 
     PROTOCOL = REPO / "docs" / "ab-model-routing.md"
 
+    @needs_repo_file("docs/ab-model-routing.md", AB_PROTOCOL_WHY)
     def test_it_is_written_and_says_it_has_not_been_run(self):
         text = self.PROTOCOL.read_text(encoding="utf-8")
         self.assertIn("WRITTEN, NOT RUN", text)
         print(f"\n  PROTOCOL      {self.PROTOCOL.relative_to(REPO)}: "
               f"{len(text.splitlines())} lines, registered before any measurement")
 
+    @needs_repo_file("docs/ab-model-routing.md", AB_PROTOCOL_WHY)
     def test_it_names_the_four_success_criteria(self):
         text = self.PROTOCOL.read_text(encoding="utf-8")
         for needle in ("95%", "30%", "recall", "false-closure", "hard-budget"):
             self.assertIn(needle, text, needle)
 
+    @needs_repo_file("docs/ab-model-routing.md", AB_PROTOCOL_WHY)
     def test_it_names_its_falsifiers(self):
         text = self.PROTOCOL.read_text(encoding="utf-8")
         self.assertIn("Falsifiers", text)
@@ -468,6 +475,7 @@ class ThePreRegisteredProtocolExistsAndIsUnrun(unittest.TestCase):
         print("  FALSIFIERS    F1 missed finding · F2 <30% reduction · F3 unattested "
               "route · F4 high risk on cheap · F5 false closures up")
 
+    @needs_live_corpus
     def test_its_entry_condition_is_not_met_by_this_repository(self):
         """The protocol cannot start here, and the reason is phase 11's measurement."""
         st = state_mod.load_state(REPO / "audit")

@@ -75,7 +75,8 @@ class TheSeamHasTwoAdapters(unittest.TestCase):
     """One adapter is a shape drawn around the code that already existed."""
 
     def test_both_are_registered_and_named(self):
-        self.assertEqual({"codex", "fake"}, set(provider.ADAPTERS))
+        # 0.9.6 (P1a): `codex-stream`, the parent-parsed `codex exec --json` stream.
+        self.assertEqual({"codex", "fake", "codex-stream"}, set(provider.ADAPTERS))
         for name, a in sorted(provider.ADAPTERS.items()):
             self.assertEqual(name, a.name)
             self.assertTrue(callable(a.parse))

@@ -15,7 +15,7 @@ import subprocess
 import unittest
 from pathlib import Path
 
-from tests.harness import needs_live_corpus, require_live_corpus, Fixture, finding_record, queue_pass, state_doc, xcheck_submodule
+from tests.harness import HAVE_LIVE_CORPUS, needs_live_corpus, require_live_corpus, Fixture, finding_record, queue_pass, state_doc, xcheck_submodule
 
 capsule = xcheck_submodule("capsule")
 envelope = xcheck_submodule("envelope")
@@ -25,8 +25,10 @@ util = xcheck_submodule("util")
 write_mod = xcheck_submodule("write")
 
 REPO = Path(__file__).resolve().parent.parent
-# The audit's figure, restated as a constant so the comparison cannot quietly re-baseline.
-CORPUS_BYTES = 84_610
+# The corpus as it stands, restated as a constant so the comparison cannot quietly
+# re-baseline. The audit measured 84,610 (60,112 + 24,498); 0.9.6 phase 5 grew XCHECK.md to
+# 61,417 (capsule-first reading order, the stop channel), so it is restated, not quoted.
+CORPUS_BYTES = 85_915
 
 
 # PHASE 11: the capsule now carries a slice of the deterministic fact sheet, and
@@ -51,18 +53,24 @@ def live_state():
     return state.load_state(REPO / "audit")
 
 
+# Gated per METHOD: `setUp` reached `live_state()`, so its corpus gate skipped all seven
+# tests, and one of them builds its capsule on a temp fixture.
 class TheCapsuleCarriesWhatTheCharterIsBoundBy(unittest.TestCase):
 
     def setUp(self):
+        if not HAVE_LIVE_CORPUS:
+            return
         self.state = live_state()
         self.cap = capsule.build(self.state, REPO, "Auditor", "pass P-05", sheet=sheet())
 
+    @needs_live_corpus
     def test_it_contains_every_declared_part(self):
         for key in ("role", "charter", "allowed_verbs", "norms", "sources", "findings",
                     "postcondition", "stop", "limits"):
             self.assertIn(key, self.cap)
             self.assertTrue(self.cap[key] not in (None, ""), f"{key} is empty")
 
+    @needs_live_corpus
     def test_the_verbs_are_the_roles_own_and_carry_their_status_bounds(self):
         verbs = {v["verb"] for v in self.cap["allowed_verbs"]}
         self.assertEqual(set(write_mod.ROLE_ROUTES["Auditor"]), verbs)
@@ -71,12 +79,14 @@ class TheCapsuleCarriesWhatTheCharterIsBoundBy(unittest.TestCase):
                          "the capsule hands the Auditor a wider set-status than the "
                          "authorizer will allow")
 
+    @needs_live_corpus
     def test_the_postcondition_is_the_charter_work_the_receipt_checks(self):
         self.assertEqual(sorted(envelope.CHARTER_WORK["Auditor"]["creates"]),
                          self.cap["postcondition"]["creates"])
         self.assertEqual(sorted(envelope.CHARTER_WORK["Auditor"]["bound"]),
                          self.cap["postcondition"]["bound"])
 
+    @needs_live_corpus
     def test_the_material_is_named_with_the_hash_it_had_at_dispatch(self):
         self.assertTrue(self.cap["sources"])
         for s in self.cap["sources"]:
@@ -96,12 +106,14 @@ class TheCapsuleCarriesWhatTheCharterIsBoundBy(unittest.TestCase):
         self.assertIn("MISSING AT DISPATCH", capsule.render_capsule(
             dict(cap, sources=[{"unit": "U01", "path": "gone.md", "sha256": None}])))
 
+    @needs_live_corpus
     def test_the_findings_are_the_ones_filed_against_this_charter(self):
         ids = {f["id"] for f in self.cap["findings"]}
         expected = {r.id for r in self.state.findings if r.pass_id == "P-05"}
         self.assertEqual(expected, ids)
         self.assertTrue(expected, "P-05 has no findings, so this proves nothing")
 
+    @needs_live_corpus
     def test_the_full_corpus_is_still_named(self):
         """The capsule does not hide the documents. A brief that does not admit its own
         limits is how a session confidently audits half a charter."""

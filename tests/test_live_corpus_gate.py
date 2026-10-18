@@ -13,7 +13,9 @@ present, and that the gate is keyed on the corpus rather than on anything a call
 set.
 """
 
+import ast
 import pathlib
+import re
 import unittest
 
 from tests.harness import (HAVE_INTERNAL_DOCS, HAVE_LIVE_CORPUS, LIVE_AUDIT,
@@ -171,8 +173,137 @@ class TheOtherTwoGatesAreNamedToo(unittest.TestCase):
             for g in users:
                 if f"@{g}(" in src:
                     users[g].append(f.name)
-        self.assertEqual(["test_benchmark_harness.py", "test_metrics.py"],
+        self.assertEqual(["test_benchmark_harness.py", "test_metrics.py",
+                          "test_model_routing.py"],
                          sorted(users["needs_repo_file"]))
         self.assertEqual(["test_hardening.py"], sorted(users["needs_commit"]))
         for g, mods in sorted(users.items()):
             print(f"  {g:<16} {', '.join(mods)}")
+
+
+# 2026-10-16: the gate can also hide by being too WIDE. PR #2 reached GitHub with a
+# boundary check disarmed because `OneValidatedReadBoundary` was gated as a CLASS while
+# four of its five tests never read the corpus; an audit of every class gate then found
+# 41 more such tests in 13 classes. A class gate is a claim about every method under it,
+# so this asserts the claim, statically, in both trees.
+
+#: What a corpus read looks like in source. `REPO` passed bare is a project root
+#: (`read_events(REPO)`), so it counts; `REPO / "xcheck"` and `relative_to(REPO)` do not.
+CORPUS_READ = re.compile(
+    r'REPO\s*/\s*"audit"|Path\(\s*REPO\s*,\s*"audit"|\bLIVE_AUDIT\b|require_live_corpus\('
+    r'|(?<!relative_to)\(\s*(?:str\()?REPO\)?\s*[,)](?!!r)|cwd=(?:str\()?REPO\b')
+ATTR = re.compile(r"\b(?:self|cls|self\.__class__)\.(\w+)")
+
+
+def corpus_blind_methods(src):
+    """The tests under a class-level corpus gate that reach no corpus read at all.
+
+    A read is reached directly, through a module-level name or helper that reads (to a
+    fixed point), through an attribute a setup method or the class body derived from a
+    read, or through a class helper that does. A setup STATEMENT that reads without
+    assigning (`shutil.copy(REAL_STREAM, ...)` in `setUp`) reaches every method.
+
+    Lenient by construction: every unresolved case counts as a read — a branch taken
+    only for one argument, `build_sheet(REPO)` — so a miss is possible and an accusation
+    of a test that does read the corpus is not. Measured on ed0d0b7: 39 of the 43
+    tests a manual audit cleared are flagged, none it kept."""
+    lines = src.splitlines()
+
+    def text(node):
+        return "\n".join(lines[node.lineno - 1:node.end_lineno])
+
+    tree = ast.parse(src)
+    names = {}
+    for node in tree.body:
+        if isinstance(node, ast.FunctionDef):
+            names[node.name] = node
+        elif isinstance(node, ast.Assign):
+            names.update((t.id, node) for t in node.targets if isinstance(t, ast.Name))
+    corpus = set()
+
+    def reads(node):
+        return bool(CORPUS_READ.search(text(node))) or any(
+            isinstance(n, ast.Name) and n.id in corpus for n in ast.walk(node))
+
+    while more := {k for k, n in names.items() if k not in corpus and reads(n)}:
+        corpus |= more
+
+    blind = []
+    for cls in tree.body:
+        if not (isinstance(cls, ast.ClassDef) and any(
+                getattr(d, "id", None) == "needs_live_corpus" for d in cls.decorator_list)):
+            continue
+        tainted, every = set(), False
+        for st in cls.body:
+            if isinstance(st, ast.Assign) and reads(st):
+                tainted |= {t.id for t in st.targets if isinstance(t, ast.Name)}
+        fns = {f.name: f for f in cls.body if isinstance(f, ast.FunctionDef)}
+        for setup in ("setUpClass", "setUp"):
+            for st in getattr(fns.get(setup), "body", []):
+                used = set(ATTR.findall(text(st)))
+                if not (reads(st) or used & tainted):
+                    continue
+                if isinstance(st, ast.Assign):
+                    tainted |= set(ATTR.findall("\n".join(text(t) for t in st.targets)))
+                elif reads(st):
+                    every = True
+                else:
+                    tainted |= used
+        if every:
+            continue
+        helpers = {k for k in fns if not k.startswith("test")} - {"setUp", "setUpClass"}
+        hot = set()
+
+        def reaches(f):
+            return reads(f) or bool(set(ATTR.findall(text(f))) & (tainted | hot))
+
+        while more := {k for k in helpers - hot if reaches(fns[k])}:
+            hot |= more
+        blind += [f"{cls.name}.{k}" for k, f in fns.items()
+                  if k.startswith("test") and not reaches(f)]
+    return blind
+
+
+class NoClassGateCoversATestThatReadsNoCorpus(unittest.TestCase):
+    """Runs in BOTH trees: it reads source, never the corpus — and the exported tree is
+    where an over-wide gate does its damage."""
+
+    # The needle is assembled, not written, so these fixtures do not count as gate sites
+    # in `gated_modules()` above.
+    GATE = "@" + "needs_live_corpus"
+
+    def test_every_class_gated_test_reaches_a_corpus_read(self):
+        blind = []
+        for f in sorted(TESTS.glob("test_*.py")):
+            blind += [f"{f.name}::{m}"
+                      for m in corpus_blind_methods(f.read_text(encoding="utf-8"))]
+        print(f"\n  CLASS GATES {len(blind)} gated test(s) that read no corpus")
+        self.assertEqual([], blind, "gate these per METHOD, and guard the class setup on "
+                                    "HAVE_LIVE_CORPUS, so the rest run in the exported tree")
+
+    def test_POSITIVE_CONTROL_the_shape_PR_2_hid_behind_is_flagged(self):
+        """b15972c's case: the class setup reads the real digest, one test uses it, the
+        other runs on a fixture. Only the fixture test is named."""
+        src = (f"REAL_STREAM = REPO / \"audit\" / \"events.jsonl\"\n\n{self.GATE}\n"
+               "class C(unittest.TestCase):\n"
+               "    @classmethod\n"
+               "    def setUpClass(cls):\n"
+               "        cls.real_digest = digest(REAL_STREAM)\n"
+               "    def test_on_a_fixture(self):\n"
+               "        fx = Fixture(state_doc())\n"
+               "    def test_the_real_stream(self):\n"
+               "        self.assertEqual(self.real_digest, digest(REAL_STREAM))\n")
+        self.assertEqual(["C.test_on_a_fixture"], corpus_blind_methods(src))
+
+    def test_CONTROL_a_setup_that_copies_the_corpus_reaches_every_test(self):
+        """`TheRecoveryDrill`'s shape: `setUp` copies the real stream into each test's
+        temp tree, so a test that only names `self.tmp` still reads the corpus."""
+        src = (f"{self.GATE}\n"
+               "class C(unittest.TestCase):\n"
+               "    def setUp(self):\n"
+               "        self.tmp = Path(tempfile.mkdtemp())\n"
+               "        shutil.copy(REPO / \"audit\" / \"events.jsonl\", self.tmp)\n"
+               "    def test_a_copy(self):\n"
+               "        ledger.status(self.tmp)\n")
+        self.assertEqual([], corpus_blind_methods(src))
+

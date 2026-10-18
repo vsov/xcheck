@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "xcheck"
-version = "0.9.5"                 # kept equal to xcheck.__version__ by tests/test_version_parity.py
+version = "0.9.6"                 # kept equal to xcheck.__version__ by tests/test_version_parity.py
 description = "Cross-agent audit and remediation methodology: plan, audit, triage, remediate and independently verify large code or text projects through a durable findings ledger with human gates."
 readme = "README.md"
 requires-python = ">=3.10"

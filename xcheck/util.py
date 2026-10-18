@@ -14,7 +14,8 @@ import threading
 from datetime import datetime
 from pathlib import Path
 
-from xcheck.policy import PolicyError
+from xcheck.policy import (OPERATOR_CEILING_KEYS, OPERATOR_CEILINGS, PolicyError,
+                           budget_mode_refusal, effective_ceilings)
 from xcheck.policy import load as policy_load
 from xcheck.policy import policy_keys_in, refuse_policy_in_subject, refuse_withdrawn
 from xcheck.policy import resolve as policy_resolve
@@ -1287,6 +1288,14 @@ def load_conf(audit_dir: Path, write_default: bool = False, profile: Path = None
     withdrawn = refuse_withdrawn(raw, conf_path)
     if withdrawn:
         raise SystemExit(withdrawn)
+    # 0.9.6 (P1b): a subject may not claim the payer's ceilings, nor ask for a mode.
+    mode = budget_mode_refusal(conf_path, raw)
+    if mode:
+        raise SystemExit(mode)
+    if OPERATOR_CEILINGS in raw:
+        raise SystemExit(f"{conf_path}: {OPERATOR_CEILINGS} is written by xcheck's loader "
+                         f"and read from no file — a subject that could set it could claim "
+                         f"to be the payer.")
     # The policy half, from outside the subject. Only POLICY keys are taken from it: a
     # profile is the operator's answer to "what may run here", not a second place to
     # set this project's batch size — and reading project keys from it would give one
@@ -1302,10 +1311,14 @@ def load_conf(audit_dir: Path, write_default: bool = False, profile: Path = None
         # so the subject's root is its parent — and passing it is what makes the boundary
         # a check rather than a convention.
         try:
-            for k, v in policy_load(profile, audit_dir.parent).items():
-                raw.setdefault(k, v)
+            operator = policy_load(profile, audit_dir.parent)
         except PolicyError as e:
             raise SystemExit(str(e)) from None
+        for k, v in operator.items():
+            if k not in OPERATOR_CEILING_KEYS:
+                raw.setdefault(k, v)
+        # 0.9.6 (P1b): the payer's ceilings, merged so the subject can only tighten.
+        raw.update(effective_ceilings(raw, operator))
     for k, v in CONF_DEFAULTS.items():
         raw.setdefault(k, v)
     return Conf(raw)

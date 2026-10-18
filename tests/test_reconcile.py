@@ -457,7 +457,8 @@ class OneAddedSpaceIsNotAFix(unittest.TestCase):
         print(f"  VOCABULARY {', '.join(reconcile.VERDICTS)} — no verdict names a fix")
 
 
-@needs_live_corpus
+# Gated per METHOD, not per class: 2 of 4 tests here read the corpus. The rest
+# run on temp fixtures or the package's own source, and must run in the exported tree.
 class EveryProposalIsATransitionTheCLIAccepts(unittest.TestCase):
     """Criterion 4. The proposals are fed to the validator `set-status` itself runs, over
     the real corpus and over every (verdict, status) pair the table allows.
@@ -469,11 +470,12 @@ class EveryProposalIsATransitionTheCLIAccepts(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.write = xcheck_submodule("write")
-        cls.rows = reconcile.reconcile(REAL, REPO)
+        cls.rows = reconcile.reconcile(REAL, REPO) if HAVE_LIVE_CORPUS else None
 
     def commands(self, rows):
         return [(r.id, r.status, r.action) for r in rows if not r.action.startswith("#")]
 
+    @needs_live_corpus
     def test_every_command_over_the_real_corpus_is_legal_from_its_own_status(self):
         proposed = self.commands(self.rows)
         self.assertTrue(proposed, "no command was proposed at all — nothing is tested")
@@ -488,6 +490,7 @@ class EveryProposalIsATransitionTheCLIAccepts(unittest.TestCase):
         print(f"\n  PROPOSED   {len(proposed)} command(s) over {len(self.rows)} row(s); "
               f"transitions used: {seen}")
 
+    @needs_live_corpus
     def test_the_old_proposal_would_have_been_refused(self):
         """The defect, executed rather than described: the command the previous
         vocabulary printed for these same findings."""

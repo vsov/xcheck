@@ -58,6 +58,7 @@ import hashlib
 import json
 import os
 import re
+import stat
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -549,6 +550,17 @@ SESSION_FIELDS = ({
     # `concurrent_group` is: an older xcheck refuses an unknown field, which is the
     # fail-closed direction, and adding one implies no migration.
     "tokens": _nonneg_int,
+    # The claimed stop (`envelope.read_stop_file`, bound by `envelope.bind_stop`): the
+    # child said, on its own channel, that it could not execute the charter and why — a
+    # CLAIM, which the operator resolves. OPTIONAL for the reason `tokens` is — every
+    # session before it carries none, and refusing those would rewrite admitted evidence.
+    "stop": _object,
+    # 0.9.6 (F3): the record ids this session was GIVEN at dispatch, the set a stop is
+    # bound against. OPTIONAL: a session recorded before it carries none, and a stop on
+    # such a record is refused as unbindable rather than trusted.
+    "charter_targets": _list_of(_pattern(re.compile(r"^(?:F|CF)-\d{4}$|^P-\d{2,}$|"
+                                                    r"^RP-\d{4}$|^PLAN$"),
+                                         "a record id or PLAN")),
     # Which operator profile was in force, by sha256 of its exact bytes. OPTIONAL, and
     # for the same reason `tokens` is: a session recorded before the field existed
     # carries none, and refusing those would rewrite already-admitted evidence. An
@@ -565,7 +577,9 @@ SESSION_FIELDS = ({
     #   subject_commit    the commit of the project being audited, as it stood at
     #                     dispatch, in the OUTER repository — the one a reader can check
     #                     out. Reachable from a ref, or the provenance is a dead pointer.
-    #   subject_manifest  a content digest over the audited tree (the index plus the
+    #   subject_manifest  a content digest over the audited tree (scheme 2 since 0.9.6:
+    #                     every presented file's bytes, `material_identity`; scheme 1, a
+    #                     record with no `subject_manifest_scheme`, was the index plus the
     #                     uncommitted delta). Not an object name: it survives GC of every
     #                     commit, and it is the only field that still answers "was this
     #                     the same code" when the branch has been rewritten.
@@ -638,6 +652,9 @@ SESSION_FIELDS = ({
     "capsule_digest": _pattern(SHA256_OR_UNKNOWN_RE, "a sha-256 digest or `unknown`"),
     "subject_commit": _pattern(HEAD_RE, "a git object name or `unknown`"),
     "subject_manifest": _pattern(SHA256_OR_UNKNOWN_RE, "a sha-256 digest or `unknown`"),
+    # 0.9.6 (F4): the rule `subject_manifest` was computed by. OPTIONAL: absent means
+    # scheme 1 (index + `git diff HEAD`), which every earlier record keeps.
+    "subject_manifest_scheme": _nonneg_int,
     "sandbox_seed": _pattern(HEAD_RE, "a git object name or `unknown`"),
     "controller_commit": _pattern(HEAD_RE, "a git object name or `unknown`"),
 })
@@ -1266,30 +1283,105 @@ def subject_commit(project, env=None):
     return git_head(project)
 
 
-def subject_manifest(project):
-    """A content digest over the audited tree, or None where git cannot answer.
+# What the ORCHESTRATOR writes on the session's behalf, on every single run: the log,
+# the collected patch beside it, and the session's own row in `state.json`. None of it is
+# the session's effect on the project, and all of it moves HEAD, because the courier
+# commits it. Naming the bookkeeping is what makes "did this session change anything?"
+# answerable at all — without this list the answer is `True` for every session ever run,
+# which is a gate that has stopped asking.
+#
+# 0.9.6 (F4): and the material digest (`material_identity`) subtracts the same list —
+# orchestrator writes are not the subject, and a digest that moved with every dispatch
+# would call every session's material different.
+BOOKKEEPING_PREFIXES = (
+    "audit/orchestrator-logs/",     # the session log, and the collected patch beside it
+    # PHASE 13: the context capsule, written BY THE ORCHESTRATOR before the child starts.
+    # It is the brief the session was handed, never something the session did — and
+    # forgetting it here made `effects_applied` True for every dispatch, including a
+    # cancelled one that applied nothing. Caught by the cancelled-session arm, which is
+    # what that arm is for.
+    "audit/capsules/",
+    # 0.9.6 (F4): the lock directory — owner and heartbeat, rewritten while the session it
+    # guards runs. `.gitignore` lists it in an installed project, but nothing makes a
+    # project keep that line, and the digest must not move with a heartbeat.
+    "audit/.lock/",
+)
+BOOKKEEPING_FILES = (
+    "audit/state.json",             # asked separately, below — it holds BOTH kinds
+    "audit/events.jsonl",           # the envelope journal: an append per dispatch/finish
+    # PHASE 14: the log manifest. It gains a row per session for a file the ORCHESTRATOR
+    # wrote outside the tree, so like the log itself it is bookkeeping — and like the
+    # capsule in phase 13, forgetting it made every session look as though it had changed
+    # the project. Two phases, the same lesson, the same two arms catching it.
+    "audit/logs-manifest.jsonl",
+)
 
-    Not an object name. `git gc` can take every commit in this document — a rewritten
-    branch, a deleted fork, a squashed history — and this still answers "was the audited
-    content the same", because it is computed from content ids rather than from a
-    pointer to a commit that has to survive.
 
-    Two parts, and both are needed: the INDEX (`ls-files -s` — mode, blob id, path for
-    every tracked file) plus the uncommitted DELTA (`diff HEAD`). The index alone would
-    call a dirty tree identical to a clean one, and a session audits the tree as it
-    stands, pending edits included."""
-    listing = subprocess.run(["git", "ls-files", "-s"], cwd=str(project),
-                             capture_output=True, text=True, timeout=GIT_TIMEOUT)
+# The scheme `material_identity` computes. A record carries it as
+# `subject_manifest_scheme`; a record without it is scheme 1 (the index plus `git diff
+# HEAD`, which missed untracked files entirely), and the two are not comparable.
+MANIFEST_SCHEME = 2
+
+
+def material_identity(project):
+    """`(digest, None)` for the material a session is shown, or `(None, reason)`.
+
+    0.9.6 (F4). Scheme 2, the inclusion rule in one place:
+
+      - every TRACKED and every UNTRACKED NON-IGNORED file (`git ls-files -z -c -o
+        --exclude-standard` — the set `Sandbox._seed` presents to the agent), minus the
+        orchestrator's bookkeeping (BOOKKEEPING_FILES / BOOKKEEPING_PREFIXES);
+      - per file `path\0mode\0sha256(bytes)\n`, sorted by path; a symlink hashes its link
+        text and is not followed; a deleted file is simply absent;
+      - read from the bytes on disk, so git's diff configuration (`diff.noprefix`,
+        textconv, the binary heuristic) cannot move it and a `git add` of unchanged
+        content does not either; ignored files are neither presented nor hashed.
+
+    Never a digest when the tree could not be observed faithfully: git failing, a path
+    that cannot be read, or a file whose size or mtime changed while it was read is
+    `(None, reason)` — the caller records `unknown`."""
+    root = Path(project)
+    try:
+        listing = subprocess.run(["git", "ls-files", "-z", "-c", "-o", "--exclude-standard"],
+                                 cwd=str(root), capture_output=True, timeout=GIT_TIMEOUT)
+    except (OSError, subprocess.SubprocessError) as e:
+        return None, f"git could not be run ({e})"
     if listing.returncode != 0:
-        return None
-    delta = subprocess.run(["git", "diff", "HEAD"], cwd=str(project),
-                           capture_output=True, text=True, timeout=GIT_TIMEOUT)
-    h = hashlib.sha256()
-    h.update(b"index\0")
-    h.update(listing.stdout.encode("utf-8", "replace"))
-    h.update(b"\0delta\0")
-    h.update((delta.stdout if delta.returncode == 0 else "").encode("utf-8", "replace"))
-    return h.hexdigest()
+        err = listing.stderr.decode("utf-8", "replace").strip()
+        return None, f"git ls-files exited {listing.returncode}: {err or 'no message'}"
+    paths = sorted({p for p in listing.stdout.decode("utf-8", "surrogateescape").split("\0")
+                    if p and p not in BOOKKEEPING_FILES
+                    and not p.startswith(BOOKKEEPING_PREFIXES)})
+    h = hashlib.sha256(b"xcheck-material-2\n")
+    for rel in paths:
+        path = root / rel
+        try:
+            before = os.lstat(path)
+        except FileNotFoundError:
+            continue                  # tracked but deleted in the work tree: absent
+        except OSError as e:
+            return None, f"{rel} could not be read ({e.strerror or e})"
+        try:
+            if stat.S_ISLNK(before.st_mode):
+                data = os.readlink(path).encode("utf-8", "surrogateescape")
+            elif stat.S_ISDIR(before.st_mode):
+                continue              # a submodule or a directory listed by git: no bytes
+            else:
+                data = path.read_bytes()
+            after = os.lstat(path)
+        except OSError as e:
+            return None, f"{rel} could not be read ({e.strerror or e})"
+        if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
+            return None, f"{rel} changed while it was read"
+        h.update(rel.encode("utf-8", "surrogateescape") + b"\0"
+                 + oct(before.st_mode).encode() + b"\0"
+                 + hashlib.sha256(data).hexdigest().encode() + b"\n")
+    return h.hexdigest(), None
+
+
+def subject_manifest(project):
+    """The scheme-2 material digest (`material_identity`), or None where it has no answer."""
+    return material_identity(project)[0]
 
 
 def controller_commit():

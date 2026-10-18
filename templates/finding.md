@@ -43,6 +43,20 @@ updated: YYYY-MM-DD
      the defect; an absence defect (§6 rule 7) when the twin-search now RETURNS
      the once-missing artifact. -->
 
+## Oracle
+<!-- Auditor, optional, at creation time: the machine half of "How to verify".
+     ONE fenced JSON object; `xcheck run-oracle F-NNNN` runs it under the
+     container profile only (pinned image, no network) and records the result.
+       {"argv": ["sh", "checks/F-NNNN.sh"], "expect_absent_exit": 0,
+        "timeout_s": 60, "scope": ["src/the_unit.py"]}
+     argv: what to run, from the project root (a file it names is part of the
+     oracle's digest — editing the checker makes it a different oracle);
+     expect_absent_exit: the exit status that means the defect is ABSENT;
+     timeout_s: 1-3600, required; scope: the material it tests.
+     A `closed` verdict rests on this oracle having FAILED before the fix and
+     PASSED on the current material — or on `--evidence manual:"…"`, which is
+     labelled manual. Leave this section out for a text or prose finding. -->
+
 ## Validation
 <!-- Remediator, step 1. validated / disputed / obsolete + the grounds.
      Quote re-found? Problem real? -->

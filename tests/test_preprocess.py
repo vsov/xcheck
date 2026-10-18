@@ -25,7 +25,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from tests.harness import needs_live_corpus, REPO, xcheck_submodule
+from tests.harness import HAVE_LIVE_CORPUS, needs_live_corpus, REPO, xcheck_submodule
 
 pp = xcheck_submodule("preprocess")
 capsule = xcheck_submodule("capsule")
@@ -338,7 +338,10 @@ class ItRunsOnThisRepositoryAndTheNumbersAreCheckable(unittest.TestCase):
         workflows = sorted(f".github/workflows/{p.name}"
                            for p in Path(REPO, ".github", "workflows").iterdir()
                            if p.is_file())
-        expected = sorted(root_named + ci_files + workflows)
+        # 0.9.6 (P1a): the image recipes are build surfaces too.
+        images = sorted(f"images/{d.name}/Dockerfile" for d in Path(REPO, "images").iterdir()
+                        if (d / "Dockerfile").is_file())
+        expected = sorted(root_named + ci_files + workflows + images)
         print(f"\n  HAND CHECK surfaces: {len(got)} reported, {len(expected)} counted "
               f"by hand from the tree")
         for path in expected:
@@ -363,12 +366,13 @@ class ItRunsOnThisRepositoryAndTheNumbersAreCheckable(unittest.TestCase):
         self.assertIn("file-granular", ch["note"])
 
 
-@needs_live_corpus
+# Gated per METHOD, not per class: 2 of 3 tests here read the corpus. The rest
+# run on temp fixtures or the package's own source, and must run in the exported tree.
 class TheCapsuleCarriesASliceAndNotTheSheet(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.state = state_mod.load_state(Path(REPO, "audit"))
+        cls.state = state_mod.load_state(Path(REPO, "audit")) if HAVE_LIVE_CORPUS else None
         cls.sheet = pp.build_sheet(REPO)
 
     def capsules(self):
@@ -379,6 +383,7 @@ class TheCapsuleCarriesASliceAndNotTheSheet(unittest.TestCase):
             yield cap, len(capsule.render_capsule(cap)), \
                 len(capsule.render_capsule(without))
 
+    @needs_live_corpus
     def test_the_slice_costs_a_few_hundred_bytes_not_a_few_thousand(self):
         rows = list(self.capsules())
         with_slice = sum(r[1] for r in rows) / len(rows)
@@ -395,6 +400,7 @@ class TheCapsuleCarriesASliceAndNotTheSheet(unittest.TestCase):
         self.assertGreater(corpus / with_slice, 10,
                            "the capsule stopped being a reduction")
 
+    @needs_live_corpus
     def test_the_capsule_carries_the_digest_and_not_the_sheet(self):
         cap = next(self.capsules())[0]
         pre = cap["preprocess"]

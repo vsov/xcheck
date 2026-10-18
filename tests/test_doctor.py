@@ -218,9 +218,12 @@ class OneFailureAtATime(unittest.TestCase):
         # `--network=none` and has no route to the provider. Both are the audit's false
         # PASSes, and both are consequences of the ONE knob this arm turns.
         self.assertEqual(doctor.FAIL, got["provider-path-permitted"])
+        # 0.9.6 (P1a): and the fixture's `{sidecar}` becomes a host path no container
+        # mount reaches — the launch refuses it, so the doctor does too.
+        self.assertEqual(doctor.FAIL, got["telemetry-sidecar-supported"])
         self.only(got, "sandbox-available",
                   also=("image-pinned", "agent-cli-present",
-                        "provider-path-permitted"))
+                        "provider-path-permitted", "telemetry-sidecar-supported"))
 
     def test_the_container_image_is_not_pinned(self):
         fx, conf = case(conf={"sandbox_profile": "container",
@@ -232,8 +235,11 @@ class OneFailureAtATime(unittest.TestCase):
                          "under `container` the host PATH is not where the command runs")
         self.assertEqual(doctor.FAIL, got["provider-path-permitted"],
                          "a container with no egress allowlist has no provider path")
+        self.assertEqual(doctor.FAIL, got["telemetry-sidecar-supported"],
+                         "under `container` the fixture's {sidecar} is unreachable")
         self.only(got, "image-pinned",
-                  also=("agent-cli-present", "provider-path-permitted"))
+                  also=("agent-cli-present", "provider-path-permitted",
+                        "telemetry-sidecar-supported"))
 
     def test_the_agent_cli_is_not_installed(self):
         fx, conf = case(cmd="/nonexistent/xcheck-doctor-not-a-binary {prompt} "
@@ -533,21 +539,25 @@ class ItAnswersAboutTheNextDispatch(unittest.TestCase):
         self.assertIn("UNSET", r.detail)
         self.assertIn("cannot be dispatched", r.detail)
 
-    def test_under_a_container_the_host_PATH_is_not_consulted(self):
-        """FALSE PASS #2a: the command runs inside the IMAGE. `shutil.which` reads this
-        machine, and looking inside the image means starting a container — an action a
-        preflight may not take. So: UNVERIFIED, with the command that would settle it."""
+    def test_under_a_container_the_IMAGE_is_asked_never_the_host(self):
+        """FALSE PASS #2a: the command runs inside the IMAGE, and `shutil.which` reads
+        this machine. 0.9.6 (P1a): the image itself is asked (`runner.image_cli_probe`,
+        `<exe> --version` with no network) — PASS only on exit 0, FAIL otherwise, and
+        UNVERIFIED when docker cannot answer. The real-docker arm is
+        `tests/test_codex_path.py::DoctorAsksTheImage`."""
         fx, conf = case(conf={"sandbox_profile": "container"},
-                        cmd="/definitely/not/here/xcheck-phase10 {prompt} {sidecar} "
-                            "{token_cap}")
-        r = self.results(fx, conf)["agent-cli-present"]
-        print(f"  CONTAINED  {r.verdict}: {r.detail[:120]}")
-        print(f"    TO VERIFY: {r.remedy}")
-        self.assertEqual(doctor.UNVERIFIED, r.verdict,
-                         "a command absent from the HOST decided a container question")
-        self.assertIn("in the image", r.detail)
-        self.assertIn("docker run --rm", r.remedy)
-        self.assertNotIn("NOT ON PATH", r.detail)
+                        cmd="/definitely/not/here/xcheck-phase10 {prompt} {token_cap}")
+        for probe, want in (((True, "codex-cli 0.162.1"), doctor.PASS),
+                            ((False, "exited 127"), doctor.FAIL),
+                            ((None, "docker is not on PATH"), doctor.UNVERIFIED)):
+            with mock.patch.object(runner, "image_cli_probe", return_value=probe):
+                r = self.results(fx, conf)["agent-cli-present"]
+            print(f"  CONTAINED  probe={probe[0]!s:5} -> {r.verdict}: {r.detail[:100]}")
+            self.assertEqual(want, r.verdict, r.detail)
+            self.assertIn("in the image", r.detail)
+            self.assertNotIn("NOT ON PATH", r.detail)
+            if want == doctor.UNVERIFIED:
+                self.assertIn("docker run --rm --network=none", r.remedy)
 
     def test_a_container_with_no_allowlist_has_no_provider_path(self):
         """FALSE PASS #2b: `container_argv` passes `--network=none` unless a broker was
