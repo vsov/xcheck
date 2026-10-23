@@ -13,6 +13,29 @@ from the repository, it is not invented here.
 
 ---
 
+## 0.9.7 — 2026-10-23 · schema 1
+
+A one-fix release over 0.9.6, found by 0.9.6's first CI run on a Linux runner.
+
+Everything below is scoped to `orchestrated` sessions — the ones `xcheck next` and
+`xcheck loop` launch through `runner.py`.
+
+- **A local build is pinned by its image ID.** 0.9.6 told the operator to pin a locally
+  built image (the Codex CLI image, the fake image the tests build) as
+  `name@sha256:<image ID>`. A local build has no registry digest, and the Linux engine
+  reads a digest after a name as one and tries to pull it — so the documented profile
+  line, and every case of `tests/test_codex_path.py` that runs the fake image, failed on Linux while
+  passing on the development machine's engine. The full content-addressed image ID,
+  `sha256:<64 hex>`, is now accepted as a pin (a shortened one is refused by name), and
+  the profile template, `docs/operator.conf.example`, `docs/codex-provider.md`, the test
+  fixture and `xcheck doctor`'s remedy all name it. A registry image is still pinned as
+  `name@sha256:<repository digest>`.
+- **Two test fixes for the exported tree**: the installed-copy check skips where `audit/`
+  is not shipped, and the pin that lists every internal-file skip names it.
+
+Still NOT VERIFIED, as in 0.9.6: a live Codex session (no operator credential has been
+present). No schema change; nothing to migrate.
+
 ## 0.9.6 — 2026-10-17 · schema 1
 
 The response to the **seventh** review (2026-10-16), which read 0.9.5 plus an uncommitted
