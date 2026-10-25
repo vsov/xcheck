@@ -209,7 +209,19 @@ class TheGateStopsAtTheGate(unittest.TestCase):
             return p.stdout
 
         before = tags()
-        p = subprocess.run(["bash", str(GATE)], cwd=str(REPO),
+        # 0.9.8: under a UTF-8 COLLATING locale where this machine has one. The gate
+        # compared a shell `sort` with Python's `sorted()`, and only a UTF-8 locale
+        # orders them differently — so it was green on every machine set to C and red on
+        # every macOS runner, for five weeks. Running it here under the locale that broke
+        # it makes the same mistake fail on any machine that has the locale.
+        env = dict(os.environ)
+        locales = subprocess.run(["locale", "-a"], capture_output=True, text=True).stdout
+        utf8 = next((loc for loc in ("en_US.UTF-8", "en_US.utf8")
+                     if loc in locales.split()), None)
+        if utf8:
+            env["LC_ALL"] = utf8
+        print(f"\n  gate locale: {utf8 or 'inherited (no en_US UTF-8 locale here)'}")
+        p = subprocess.run(["bash", str(GATE)], cwd=str(REPO), env=env,
                            capture_output=True, text=True, timeout=1800)
         after = tags()
         self.assertEqual(p.returncode, 0,

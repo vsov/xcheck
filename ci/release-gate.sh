@@ -161,7 +161,10 @@ install_and_run() {
   # skipping itself for some other reason, the artifact's score would quietly shrink
   # and nothing would say why — this is what notices.
   local skipped declared
-  skipped="$(sed -n 's/^SKIP: \(.*\) -> .*/\1/p' "$WORK/selftest-$label.log" | sort)"
+  # `LC_ALL=C`: the declared side is Python's `sorted()`, which orders by codepoint. A
+  # UTF-8 `sort` collates `§5 …` FIRST, so on any machine whose locale is UTF-8 (every
+  # macOS runner) the same five names compared unequal — the 0.9.5-0.9.7 macOS failure.
+  skipped="$(sed -n 's/^SKIP: \(.*\) -> .*/\1/p' "$WORK/selftest-$label.log" | LC_ALL=C sort)"
   declared="$("$venv/bin/python" -c \
       'from xcheck.selftest import REPO_ONLY_CHECKS; print("\n".join(sorted(REPO_ONLY_CHECKS)))')"
   say "$label: skipped $(printf '%s' "$skipped" | grep -c . || true) checks with no subject in an installed artifact:"
