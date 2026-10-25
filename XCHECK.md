@@ -1,6 +1,6 @@
 # XCHECK — Cross-Agent Audit & Remediation Methodology
 
-version: 0.9.7
+version: 0.9.8
 
 Self-contained. If you are an agent reading this inside a project's `audit/`
 directory, your context capsule (named in your prompt) is what to read first: it is

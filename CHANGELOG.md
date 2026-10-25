@@ -13,6 +13,34 @@ from the repository, it is not invented here.
 
 ---
 
+## 0.9.8 — 2026-10-25 · schema 1
+
+The weekly CI matrix (ubuntu and macOS × Python 3.10/3.11/3.12) had failed every run
+since its first, on 2026-09-21. 0.9.8 makes it pass; nothing an operator runs changed.
+
+Everything below is scoped to `orchestrated` sessions — the ones `xcheck next` and
+`xcheck loop` launch through `runner.py`.
+
+- **The release gate compares in C collation.** It collected the installed selftest's
+  skipped checks with a shell `sort` and compared them with Python's `sorted()` of
+  `REPO_ONLY_CHECKS`. One name begins with `§`; a UTF-8 locale collates it first and
+  codepoint order last, so on every macOS runner the same five names compared unequal
+  and the gate failed under every Python. Every development machine had `LC_COLLATE=C`,
+  so it never reproduced there. `tests/test_release_lifecycle.py` now runs the gate under
+  `en_US.UTF-8` where that locale exists.
+- **A delegated gate is checked against the run's own tier.** `test_ci_contract` demanded
+  the `release` tier by name, while `ci/run-checks.sh` also delegates in `nightly`, which
+  carries the release-gate step too — a contradiction that failed all six cells.
+- **No docker means NOT VERIFIED, not unsupported.** The `SECURITY.md` derivation check
+  failed on the macOS runners, which have no docker: a claim about the `container`
+  profile had no column to be held in. It is reported NOT VERIFIED there and stays a
+  failure wherever docker answers.
+- **A failed gate report keeps its cause.** Both tests that run the gate kept only the
+  tail of its output — the SBOM and `release gate: FAIL` — so the failing step was never
+  on record. They now keep every `FAIL` line with the lines printed before it.
+
+No schema change; nothing to migrate.
+
 ## 0.9.7 — 2026-10-23 · schema 1
 
 A one-fix release over 0.9.6, found by 0.9.6's first CI run on a Linux runner.
