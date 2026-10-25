@@ -547,7 +547,7 @@ class SecurityMdIsDerivedFromTheMatrix(unittest.TestCase):
         held = self.held_ids()
         tests = "\n".join(p.read_text(encoding="utf-8")
                           for p in sorted(REPO.glob("tests/test_*.py")))
-        problems = []
+        problems, unmeasured = [], []
         print("\nSECURITY.md controls and their proofs:")
         for control, default, proof in rows:
             cited = re.findall(r"\bA[1-8]\b", proof)
@@ -560,12 +560,21 @@ class SecurityMdIsDerivedFromTheMatrix(unittest.TestCase):
                 if aid not in MATRIX:
                     problems.append(f"{control}: cites {aid}, which the matrix has no "
                                     f"row for")
+                elif aid not in held and "container" in default and not DOCKER_OK:
+                    # 0.9.8: a claim about the `container` profile, on a machine with no
+                    # docker, has no column to be held in. That is UNMEASURED here, not
+                    # unsupported — the GitHub macOS runners have no docker, and this
+                    # line failed every macOS cell of the weekly matrix. It stays a
+                    # failure wherever docker answers (the ubuntu cells, main, a tag).
+                    unmeasured.append(f"{control}: {aid} — {DOCKER_WHY}")
                 elif aid not in held:
                     problems.append(f"{control}: cites {aid}, which has NO held cell in "
                                     f"the matrix — the claim is unsupported")
             for t in named:
                 if f"def {t}" not in tests:
                     problems.append(f"{control}: cites {t}, which does not exist")
+        for u in unmeasured:
+            print(f"  NOT VERIFIED here (no docker): {u}")
         self.assertEqual([], problems,
                          "SECURITY.md claims the matrix does not support:\n  - "
                          + "\n  - ".join(problems))

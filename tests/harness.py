@@ -74,6 +74,24 @@ def require_live_corpus():
         raise _ut.SkipTest(NO_CORPUS_REASON)
 
 
+def gate_failures(stdout, before=12):
+    """Every `FAIL` line in a release-gate run, each with the lines printed just before it.
+
+    The gate prints a step's own evidence (a pip log tail, the failing selftest lines) and
+    then its `FAIL:` line, at the point in the run where the step failed. A report that
+    keeps only the last few kilobytes keeps the SBOM and `release gate: FAIL` and drops
+    the cause: that is how the 0.9.5-0.9.7 macOS matrix cells failed for five weeks with
+    no failing step on record. `(no FAIL line)` when there is none, so an empty answer
+    cannot read as a clean one."""
+    lines = stdout.splitlines()
+    hits = [i for i, ln in enumerate(lines)
+            if ln.startswith("FAIL") and "release gate: FAIL" not in ln]
+    if not hits:
+        return "(no FAIL line)"
+    keep = sorted({j for i in hits for j in range(max(0, i - before), i + 1)})
+    return "\n".join(lines[j] for j in keep)
+
+
 def needs_repo_file(rel, why):
     """Skip a test or class when this checkout does not carry `rel`.
 

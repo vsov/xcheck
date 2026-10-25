@@ -30,7 +30,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from tests.harness import REPO, needs_live_corpus
+from tests.harness import REPO, gate_failures, needs_live_corpus
 
 WORKFLOW = REPO / ".github" / "workflows" / "ci.yml"
 
@@ -489,7 +489,7 @@ class TheGateRunsUnderEverySupportedPython(unittest.TestCase):
             tail = [ln for ln in r.stdout.splitlines() if ln.startswith("release gate:")]
             results[v] = f"ran ({how}) -> rc={r.returncode} · {tail[-1] if tail else ''}"
             if r.returncode != 0:
-                results[v] += "\n" + r.stdout[-1500:]
+                results[v] += "\n" + gate_failures(r.stdout) + "\n" + r.stdout[-600:]
         print("\nrelease gate, per supported Python:")
         for v in sorted(results):
             print(f"  {v}: {results[v]}")
@@ -503,14 +503,20 @@ class TheGateRunsUnderEverySupportedPython(unittest.TestCase):
         # release tier ever stopped carrying a release-gate step, delegation would be a
         # promise nobody keeps, and every delegated line above would be a green over
         # nothing — the same empty set, one indirection further away.
+        #
+        # 0.9.8: asked of the tier this run IS in. It used to demand `release` by name,
+        # while `ci/run-checks.sh` delegates in `nightly` too — a tier that also carries
+        # the release-gate step — so the scheduled matrix failed on every cell, every
+        # week, on a contradiction between this line and the script.
         if delegated:
             tier_data = tiers()
-            self.assertTrue(tier_data.has_step("release", "release-gate"),
-                            f"python{delegated} was delegated to ci/run-checks.sh, "
-                            f"which no longer runs the gate at all")
-            self.assertEqual("release", os.environ.get(tier_data.TIER_ENV),
-                             "the gate was delegated inside a run that is not the "
-                             "release tier, so nothing will run it")
+            tier = os.environ.get(tier_data.TIER_ENV)
+            self.assertIn(tier, tier_data.TIERS,
+                          f"python{delegated} was delegated, but the run names no tier "
+                          f"({tier_data.TIER_ENV}={tier!r}), so nothing says who runs it")
+            self.assertTrue(tier_data.has_step(tier, "release-gate"),
+                            f"python{delegated} was delegated inside the {tier!r} tier, "
+                            f"which runs no release-gate step — nothing will run it")
         bad = {v: r for v, r in results.items() if "rc=0" not in r and "ran" in r}
         self.assertEqual(bad, {}, f"the gate is red under a version the project "
                                   f"promises: {bad}")

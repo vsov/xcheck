@@ -21,7 +21,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from tests.harness import xcheck_submodule, REPO, XCHECK, audit_md, ledger
+from tests.harness import xcheck_submodule, REPO, XCHECK, audit_md, gate_failures, ledger
 
 from xcheck import __version__
 
@@ -213,7 +213,8 @@ class TheGateStopsAtTheGate(unittest.TestCase):
                            capture_output=True, text=True, timeout=1800)
         after = tags()
         self.assertEqual(p.returncode, 0,
-                         f"the release gate failed:\n{p.stdout[-4000:]}\n{p.stderr[-2000:]}")
+                         f"the release gate failed:\n{gate_failures(p.stdout)}\n"
+                         f"--- last of stdout ---\n{p.stdout[-1500:]}\n{p.stderr[-2000:]}")
         self.assertRegex(p.stdout, r"(?m)^(un)?released: ",
                          "the gate reported no tag parity at all")
         self.assertEqual(before, after,
