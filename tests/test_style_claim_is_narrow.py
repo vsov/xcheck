@@ -465,7 +465,8 @@ SPAN_RE = re.compile(r"`([^`\s]+)`")
 DOCS = ("README.md", "SECURITY.md", "CHANGELOG.md", "XCHECK.md", "bootstrap.md",
         "styles/README.md") + tuple(
             f"skills/{p.name}/SKILL.md" for p in sorted((REPO / "skills").iterdir())
-            if p.is_dir())
+            if p.is_dir()) + tuple(
+            f"docs/guide/{p.name}" for p in sorted((REPO / "docs" / "guide").glob("*.md")))
 
 
 def style_paths(name, text):

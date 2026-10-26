@@ -74,9 +74,9 @@ if ! "$PY" -c "import build" 2>/dev/null; then
   exit 1
 fi
 say "$($PY -c 'import build,sys; print(f"build {build.__version__} on python {sys.version.split()[0]}")')"
-say "NOTE: this machine has one interpreter. The 3.10/3.11/3.12 promise is CI's, and"
-say "      CI has never been observed running (no git remote). A green gate here is"
-say "      evidence about THIS interpreter only."
+say "NOTE: the 3.10/3.11/3.12 promise is CI's. CI on the public mirror was last observed"
+say "      green at 0.9.8 (runs 40188197283, 40188197103). A green gate here is evidence"
+say "      about THIS interpreter only."
 
 # ---------------------------------------------------------------------------
 # 1. build both artifacts

@@ -202,6 +202,8 @@ class SkillsCarryTheContract(unittest.TestCase):
         surfaces = [(f"skills/{d.name}/SKILL.md", d / "SKILL.md")
                     for d in sorted((REPO / "skills").iterdir())]
         surfaces += [(n, REPO / n) for n in ("README.md", "XCHECK.md", "bootstrap.md")]
+        surfaces += [(f"docs/guide/{p.name}", p)
+                     for p in sorted((REPO / "docs" / "guide").glob("*.md"))]
         surfaces += [(f"xcheck/{p.name}", p)
                      for p in sorted((REPO / "xcheck").glob("*.py"))]
         offenders = []

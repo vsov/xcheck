@@ -341,7 +341,82 @@ COUNTERFACTUALS = [
 # ("the sandbox is left", "One contained Codex path") were reworded, not admitted: the
 # first is teardown and the second names an image recipe, and neither needed the word.
 # Unscoped stayed at 0: the entry opens with the `orchestrated` scoping paragraph.
-PRE_RUN_CLAIMS = 213
+# Moved 213 -> 219 on 2026-10-25 (phase 3 of the documentation rewrite), same debt paid.
+# A NEW scanned document, not a grown one: `docs/guide/README.md` joined
+# `test_launch_surfaces.SHIPPED_DOCS` (by glob over `docs/guide/*.md`, so every later
+# article is scanned the moment it exists) and carries 6 claims; every other document is
+# byte-for-byte the same count. All six are glossary definitions — envelope, sandbox
+# profile (two sentences), launch mode, operator profile and the scoping sentence itself —
+# and none widens a guarantee: each says what an existing control is called. Unscoped
+# stayed at 0: the glossary's first paragraph names `orchestrated` and
+# `uncontained-direct` BEFORE the first claim. The first draft had 7 claims and 1
+# unscoped (the pointer to SECURITY.md above the glossary said "containment"); the fix
+# was rewording that sentence, not a looser gate.
+# Moved 219 -> 236 on 2026-10-25 (phase 5 of the documentation rewrite), same debt paid.
+# Another NEW scanned document: `docs/guide/how-it-works.md` carries 17 claims; every
+# other document, `docs/guide/methodology.md` included (0), is byte-for-byte the same
+# count. The 17 are the article's walk through one session and the profile table, and
+# each restates a control README §8 and SECURITY.md already describe — the environment
+# allowlist, redaction and its limit, the four profiles and what each does NOT do, the
+# digest pin, skip-permissions only under isolation, the capability report, the hard
+# timeout, the escape-probe method, the default image and the two launch modes. None
+# promises more than its source: the "does not do" column and the redaction limit are
+# there so that it cannot. Unscoped stayed at 0: the article's first paragraph names
+# `orchestrated` and `uncontained-direct` BEFORE the first claim, under the H1 frame.
+# Moved 236 -> 243 on 2026-10-25 (phase 6 of the documentation rewrite), same debt paid.
+# Another NEW scanned document: `docs/guide/usage-patterns.md` carries 7 claims; every
+# other document is byte-for-byte the same count. The 7 are a quoted `--dry-run next`
+# sandbox line, the `sandbox:` line of `xcheck status`, the untrusted profile setting
+# `sandbox_profile=container`, what that profile does and does NOT buy (each item is a
+# SECURITY.md row: --network=none, the env allowlist, the empty tmpfs HOME, the timeout),
+# the egress allowlist, the worst-case `session_timeout` pricing of a fan-out, and the
+# anti-pattern naming `uncontained-direct`. None widens a guarantee. Unscoped stayed at
+# 0: the article's first paragraph names `orchestrated` and `uncontained-direct` BEFORE
+# the first claim, under the H1 frame.
+# Moved 243 -> 251 on 2026-10-25 (phase 7 of the documentation rewrite), same debt paid.
+# Another NEW scanned document: `docs/guide/performance.md` carries 8 claims; every other
+# document is byte-for-byte the same count. All 8 are the key name `session_timeout`
+# used as a COST figure — the lever table row, a pass hitting it, a hang lasting until it,
+# the worst-case pricing of a fan-out, the `--budget` refusal, the checklist — and each
+# restates README §8's own row (hard wall-clock bound per session). None widens a
+# guarantee. A ninth, "both read-only" about `status`/`metrics`, was reworded, not
+# admitted: it described a command, not a control. Unscoped stayed at 0: the article's
+# first paragraph names `orchestrated` and `uncontained-direct` BEFORE the first claim.
+# Moved 251 -> 258 on 2026-10-25 (phase 8 of the documentation rewrite), same debt paid.
+# Another NEW scanned document: `docs/guide/when-not-to-use.md` carries 7 claims; every
+# other document is byte-for-byte the same count (usage-patterns.md and how-it-works.md
+# were edited in this phase and still count 7 and 17). The 7 are the scoping sentence
+# itself, and six statements of what xcheck does NOT hold, each a SECURITY.md line: the
+# default profiles do not isolate the machine or the network, `worktree`/`readonly`
+# isolate the repository only, what `sandbox_profile=container` adds (no network, empty
+# HOME, source mounted read-only), the POSIX-only process-group kill, and the env
+# allowlist as the way to keep credentials out. None widens a guarantee; most narrow
+# one. Unscoped stayed at 0: the intro names `orchestrated` and `uncontained-direct`
+# BEFORE the first claim, under the H1 frame.
+# Moved 258 -> 254 on 2026-10-25 (phase 9 of the documentation rewrite), the first move
+# DOWN, same debt paid in the other direction. README.md went 47 -> 43 and every other
+# document is byte-for-byte the same count. Diffed by TEXT, the README rewrite shortened
+# §8 *Execution model* and *orchestrator.conf* into one bullet per control and handed the
+# detail to `docs/guide/how-it-works.md`, which already carries it scoped (its 17 claims
+# did not move): the capability report and `verified at launch`, the escape-probe
+# method, the old `<exe> --version` history, `xcheck cancel` killing the process group,
+# and "the ambient grant becomes a contained one". No control lost its README sentence:
+# sandbox profiles, skip-permissions, the env allowlist, the hard timeout and group kill,
+# redaction and its limit all still have one, now shorter. Unscoped stayed at 0: §8's
+# preamble still names `orchestrated` and `uncontained-direct` BEFORE the first claim and
+# covers every `###` under it, and §5.3/§7/§9 keep their own mode mentions.
+# Moved 254 -> 262 on 2026-10-25 (phase 11 of the documentation rewrite, the reader
+# pass), same debt paid. Diffed by TEXT against HEAD: README.md 43 -> 47 (the §5.3
+# prerequisites sentence that the profile governs `orchestrated` sessions, the §7 note
+# that a pasted one-liner is `uncontained-direct`, the §8 "the sandbox limits what the
+# agent can do" lead-in, and the Codex note split into two sentences); guide README.md
+# 6 -> 8 (the `orchestrator` glossary entry naming sandbox and envelope, and the
+# per-role `readonly`/`worktree` defaults in *sandbox profile*); usage-patterns.md 7 -> 9
+# (Pattern 1's scoping sentence and the `xcheck doctor` gloss). how-it-works.md,
+# performance.md and when-not-to-use.md were reworded and kept their counts. Each new
+# sentence restates a README §8 row or a SECURITY.md line; none widens a guarantee.
+# Unscoped stayed at 0: every one sits under a frame that names its mode first.
+PRE_RUN_CLAIMS = 262
 PRE_RUN_UNSCOPED = 0
 PRE_RUN_OFFENDERS = 0
 # 2 -> 0 in the same phase, and DOWNWARD, which is the direction that needs no defence:

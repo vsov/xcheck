@@ -563,7 +563,7 @@ def cmd_next(project: Path, conf, dry_run, assume_yes=False):
             # without re-parsing the prose above.
             envelope.emit(project, "gate_reached", None, gate=kind,
                           detail=_gate_detail(detail))
-            report_gate(kind, detail, project)
+            report_gate(kind, detail, project, _state)
             return kind
         role, charter = role_and_charter(kind, detail)
         if lock:
@@ -854,13 +854,15 @@ def _class_lines(project=None, state=None):
         return []
 
 
-def report_gate(kind, detail, project=None):
+def report_gate(kind, detail, project=None, state=None):
     if kind == "stop-triage":
         print(f"gate: triage needed — {len(detail)} findings in reported. Dialogue: $xcheck-triage (Codex) or /xcheck-triage")
         # PHASE 15: the one moment a human is being asked to sort findings is the moment
         # the recurring-class candidates are worth seeing — triaging four instances of
         # one defect as four unrelated findings is the work this detector exists to save.
-        for line in _class_lines():
+        # The audit being gated, never the cwd's: with no project `_class_lines` reads
+        # `./audit`, so a `--project` run printed some other audit's class counts.
+        for line in _class_lines(project, state):
             print(line)
     elif kind == "stop-migrate":
         # Once per audit: a new audit has no state until its plan is loaded, and loading

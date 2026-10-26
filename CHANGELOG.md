@@ -13,6 +13,29 @@ from the repository, it is not invented here.
 
 ---
 
+## Unreleased
+
+A documentation rewrite and two small fixes; no version was minted.
+
+- **Fixed: the triage gate counted another audit's classes.** Run with `--project` from
+  another directory, the `stop-triage` gate printed the gated audit's triage count beside
+  the recurring-class counts of whatever `./audit` the shell was in. The loop now passes its
+  own project and state; a test runs `next` from a decoy directory and asserts the count.
+- **Fixed: the release gate said CI had never been observed.** Its toolchain note now names
+  the runs observed green at 0.9.8, and a test holds it to the same contract as the README.
+
+- **The README is rewritten as an entry page.** Sections 1–16 keep their numbers and
+  headings, because runtime messages cite them; the prose inside is shorter and points into
+  the guide. Three statements that had gone false are corrected: the compatibility row now
+  names the CI runs observed green at 0.9.8 instead of saying CI was never observed, the
+  session outcomes include `stalled`, and `--budget` states the refusal after the first
+  session.
+- **A guide in `docs/guide/`:** the methodology, how a run works, usage patterns,
+  performance, and when not to use xcheck, with a glossary. Every flag, key, default and
+  path in it is checked against the code by `tests/test_guide_facts.py`.
+
+---
+
 ## 0.9.8 — 2026-10-25 · schema 1
 
 The weekly CI matrix (ubuntu and macOS × Python 3.10/3.11/3.12) had failed every run

@@ -43,7 +43,8 @@ DECLARATION_RE = re.compile(r"\*\*Launch mode: `([a-z][a-z-]*)`\.?\*\*")
 # claim arriving there later is caught rather than exempted by an old list.
 SHIPPED_DOCS = ["README.md", "SECURITY.md", "CHANGELOG.md", "bootstrap.md",
                 "XCHECK.md", "launchers/README.md"] + \
-    [f"skills/{s}/SKILL.md" for s in SKILLS]
+    [f"skills/{s}/SKILL.md" for s in SKILLS] + \
+    sorted(f"docs/guide/{p.name}" for p in (REPO / "docs" / "guide").glob("*.md"))  # the user guide, from the docs rewrite on
 
 # A sentence claiming containment. Deliberately over-inclusive: a false positive costs
 # one scoping clause in a document, a false negative ships an unscoped guarantee.

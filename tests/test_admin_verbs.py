@@ -317,7 +317,7 @@ class NoShippedDocumentInstructsAHandEdit(unittest.TestCase):
     a deleted sentence that nothing guards comes back."""
 
     DOCS = ["README.md", "XCHECK.md"]
-    GLOBS = ["skills/*/SKILL.md", "templates/*.md"]
+    GLOBS = ["skills/*/SKILL.md", "templates/*.md", "docs/guide/*.md"]
 
     # Instruction shapes, not the mere co-occurrence of "edit" and "state.json":
     # every shipped doc SHOULD say "never hand-edit a view", and a blunt substring

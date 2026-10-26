@@ -1,6 +1,6 @@
 # xcheck
 
-**Cross-agent audit & remediation methodology for projects too large to trust to a single agent session** — codebases, book manuscripts, reference corpora, documentation sets.
+**Cross-agent audit & remediation methodology for projects too large to trust to a single agent session**: codebases, book manuscripts, reference corpora, documentation sets.
 
 Two AI agents and one human run a cycle:
 
@@ -8,9 +8,11 @@ Two AI agents and one human run a cycle:
 audit (agent A) → triage (you) → remediate (agent B) → verify (agent A) → repeat
 ```
 
-until the pass queue is empty and every finding reaches a terminal status. Agents communicate **only through files** in an `audit/` directory inside the audited project; you carry the baton between sessions and make one routine mandatory decision — which findings to fix. (Rarer exceptional halts also need you, all distinct from triage — enumerated once in `XCHECK.md` §3 and detailed in §8/§11 below; this contract does not re-count them.)
+The cycle repeats until the pass queue is empty and every finding reaches a terminal status. The agents never talk to each other: they communicate only through files in an `audit/` directory inside the audited project. You make one routine decision: which findings are worth fixing. A few rarer halts also need you; `XCHECK.md` §3 lists them, and §8 below says where the loop stops for each.
 
-Repository: **github.com/vsov/xcheck** · License: MIT · Orchestrator: Python 3, stdlib only, zero dependencies.
+Repository: github.com/vsov/xcheck · This README describes 0.9.8 · License: MIT · Orchestrator: Python 3, stdlib only, zero dependencies.
+
+> **Read next.** This README installs xcheck and walks you through a first audit. The [guide](docs/guide/README.md) explains the rest: [the methodology](docs/guide/methodology.md) behind it, [how it works](docs/guide/how-it-works.md) inside a run, [usage patterns](docs/guide/usage-patterns.md) for common situations, [performance](docs/guide/performance.md) for faster and cheaper audits, and [when not to use it](docs/guide/when-not-to-use.md).
 
 ---
 
@@ -37,20 +39,20 @@ Repository: **github.com/vsov/xcheck** · License: MIT · Orchestrator: Python 3
 
 ## 1. Why not "just ask an agent to review"
 
-A single long "review my project" conversation over a large body of material fails in a predictable way: the agent loses the thread, invents specifics, and hallucinates both findings and "fixes." xcheck replaces trust in agent memory with four mechanisms:
+Ask one agent to "review my project" in one long conversation, and on a large project it fails in a predictable way. It loses the thread and reports problems and "fixes" that are not real. xcheck replaces trust in the agent's memory with four mechanisms:
 
-1. **Narrow chartered sessions.** Every session gets an exact scope ("dimension *terminology*, chapters 4–6, stop after 15 findings") and is obligated to stop rather than skim. A session with no charter must refuse to start.
-2. **The evidence standard.** A finding without a character-exact quote, a locator, and a named violated norm is invalid by construction. The quote can be re-checked with `grep` — a hallucination does not survive.
-3. **Validation before fixing.** The remediating agent must re-confirm every finding against the source before changing anything. Invented findings die here, marked `disputed`.
-4. **Cross-verification.** The fix is judged by an agent that did not write it — a separate session with the standing instruction *"your job is to prove the fix wrong, not to confirm it."*
+1. **Narrow chartered sessions.** Every session gets an exact job ("dimension *terminology*, chapters 4–6, stop after 15 findings") and must stop rather than skim. A session with no charter must refuse to start.
+2. **The evidence standard.** A finding needs a character-exact quote, a locator and the rule it breaks, or it is invalid. Anyone can re-check the quote with `grep`, so an invented finding does not survive.
+3. **Validation before fixing.** The agent that fixes must first re-confirm the finding against the source. Invented findings die here, marked `disputed`.
+4. **Cross-verification.** A fix is judged by an agent that did not write it: a separate session told *"your job is to prove the fix wrong, not to confirm it."*
 
-On top of that, every finding is screened for **systemicity** before it is fixed: a census of the whole corpus asks whether this is one instance of a repeating error. At three or more instances, the whole *class* is fixed — including the norm that produced it.
+Before a finding is fixed, a census of the whole project asks whether it is one copy of a repeating error. At three or more copies, the whole *class* is fixed, including the rule that let it happen. [The methodology](docs/guide/methodology.md) explains what each mechanism protects against.
 
 ## 2. When to use it (and when not to)
 
-**Good fit:** a project that does not fit into one attentive reading session — a book, a series of reference volumes, a codebase from ~10 files up, a documentation corpus — where the question is "what is systematically wrong here," not "fix this typo."
+**Good fit:** a project too big to read attentively in one sitting : a book, a series of reference volumes, a codebase from ~10 files up, a documentation corpus. You want to know what is systematically wrong across it.
 
-**Poor fit:** a point bugfix, a single-diff review, a 200-line file. There the cycle costs more than it returns — ordinary code review is enough.
+**Poor fit:** a point bugfix, a single-diff review, a 200-line file. There the cycle costs more than it returns, and ordinary code review is enough. [When not to use it](docs/guide/when-not-to-use.md) covers the other bad fits. Among them: no written rules, nobody to triage, hostile code with no container, production gates, small budgets.
 
 ## 3. Concepts in five minutes
 
@@ -60,9 +62,9 @@ On top of that, every finding is screened for **systemicity** before it is fixed
 |---|---|---|
 | Planner | agent, 1 session | Inventories the project and its norms → `AUDIT.md`: dimensions, unit map, pass queue |
 | Auditor | agent, N sessions | One pass = one dimension × a batch of units → findings + a coverage report |
-| **Triage** | **you** | **`accepted` / `rejected` / `deferred` in the ledger — the one routine mandatory human gate** (rarer exceptional gates exist, all distinct from triage — enumerated in `XCHECK.md` §3) |
+| **Triage** | you | `accepted` / `rejected` / `deferred` in the ledger: the one routine mandatory human gate (rarer exceptional gates exist, all distinct from triage, and `XCHECK.md` §3 lists them) |
 | Remediator | agent, N sessions | A batch of accepted findings: validate → census → plan → fix → self-check |
-| Verifier | agent, N sessions | A verdict on every fix: `closed` or `reopened`. **Never the one who fixed it** |
+| Verifier | agent, N sessions | A verdict on every fix: `closed` or `reopened`. Never the one who fixed it |
 
 Role ≠ agent: any capable agent can play any role. Two rules are hard: the Verifier never judges its own fix, and only one writing session runs at a time.
 
@@ -76,28 +78,30 @@ fixed ─────(Verifier)─────► closed | reopened
 reopened ──(Remediator)───► planned ► fixed again (attempts += 1)
 ```
 
-Terminal statuses: `closed`, `rejected`, `withdrawn`, `obsolete`, `superseded-by-class` (with a closed class finding). `deferred` is **not** terminal — it is your debt to re-triage.
+Terminal statuses: `closed`, `rejected`, `withdrawn`, `obsolete`, and `superseded-by-class`. A superseded finding is terminal only once a closed class finding lists it as a member. `deferred` is not terminal: it is your debt to re-triage.
 
-After `reopen_limit` consecutive `reopened` verdicts on one finding (default 2), the ledger gets `⚠ needs-human` and the cycle stops for your decision.
+After `reopen_limit` consecutive `reopened` verdicts on one finding (default 2), it gets `⚠ needs-human` and the cycle stops for your decision.
 
 ### The evidence standard
 
-Every finding must contain: (1) a character-exact quote findable by search; (2) a locator — `file:line` + symbol for code, file + section for text; (3) the norm the material violates, with its own quote (style contract, spec, ADR, sourced fact, or a contradicting passage). No norm → severity capped at `info`.
+Every finding must contain: (1) a character-exact quote findable by search; (2) a locator (`file:line` + symbol for code, file + section for text); (3) the norm the material violates, with its own quote (style contract, spec, ADR, sourced fact, or a contradicting passage). No norm → severity capped at `info`.
 
 ### Agent-as-pen triage
 
-During triage the agent is the pen, not the decider: it presents findings, records **your** stated decisions verbatim, and never fills in what you did not say.
+During triage the agent only records: it presents findings, records your stated decisions word for word, and never fills in what you did not say.
+
+Every term above, and the others the guide uses, is defined in the [glossary](docs/guide/README.md#glossary).
 
 ## 4. Repository layout
 
 | Path | What it is |
 |---|---|
-| `XCHECK.md` | The methodology core. The **only** normative document agents read. Installed into each audited project. |
-| `bin/xcheck` | The orchestrator's entry point — a ~20-line bootstrap into `xcheck.cli:main`. |
+| `XCHECK.md` | The methodology core. The only normative document agents read. Installed into each audited project. |
+| `bin/xcheck` | The orchestrator's entry point, a ~20-line bootstrap into `xcheck.cli:main`. |
 | `xcheck/` | The orchestrator itself (Python 3, stdlib only), layered `util → md_prose → state → views → validate → courier → runner → decision → write → cli`, plus `envelope.py` (the invocation record), `parallel.py` (concurrent passes, merged one at a time), `dashboard.py` (a view over the two JSON payloads that computes nothing), `migrate.py` and `upgrade.py` (two operator-typed verbs), and `selftest.py`, a decision-logic battery whose pass count is measured from the check lines it emits to `sys.stdout`. |
 | `pyproject.toml` | Package metadata and the `xcheck` console script. No runtime dependencies, deliberately (N2). |
-| `CHANGELOG.md`, `SECURITY.md` | What changed per release; the trust model — what containment does and does not protect against, scoped per launch mode (`orchestrated` vs `uncontained-direct`). **Read `SECURITY.md` before pointing this at code you did not write.** |
-| `tests/` | The external battery. A test passes only when a real command's observable outcome is right — see `tests/README.md`. |
+| `CHANGELOG.md`, `SECURITY.md` | What changed per release; the trust model: what containment does and does not protect against, scoped per launch mode (`orchestrated` vs `uncontained-direct`). Read `SECURITY.md` before pointing this at code you did not write. |
+| `tests/` | The external battery. A test passes only when a real command's observable outcome is right (see `tests/README.md`). |
 | `ci/` | `run-checks.sh` (the single entry point CI uses, runnable locally) and `check-split.py`. |
 | `templates/` | Artifact skeletons: `finding.md`, `class-finding.md`, `pass.md`, `plan.md`, `construal.md`, plus `AUDIT-text.md` / `AUDIT-code.md` starting points. |
 | `skills/` | Shared launcher skills used by Codex, Claude Code, and both plugin manifests. Five are wrappers over `xcheck next` and carry no methodology; `xcheck-status` is read-only and direct (§7). |
@@ -109,6 +113,8 @@ During triage the agent is the pen, not the decider: it presents findings, recor
 | `.claude-plugin/`, `.codex-plugin/` | Claude Code and Codex plugin manifests over the checked-in `skills/` payload. |
 
 ## 5. Installation
+
+You need Python 3.10 or later, git 2.20 or later, and the agent CLIs the role commands name: by default both `codex` and `claude`, installed and signed in. If you have only one, edit the role lines after §5.3. Docker is needed only for `--trust untrusted`.
 
 ### 5.1 Get the repo
 
@@ -124,32 +130,31 @@ cd xcheck
 ./install.sh --type text /path/to/your-project    # a text corpus (the default)
 ```
 
-This creates `your-project/audit/` containing `XCHECK.md`, an `AUDIT.md` template, `templates/`, and empty `findings/`, `passes/`, `plans/`. Nothing is audited yet — the Planner fills `AUDIT.md` in the first session, after which one operator command — `xcheck migrate` — loads that plan into `audit/state.json`, the canonical record. Until then the project has no state document, and that is expected: on a tree `install.sh` created and nothing has been recorded in, `xcheck status` reports `decision: run-planner` and `xcheck next` dispatches the Planner like any other session. Any other tree without `state.json` is still refused.
+This creates `your-project/audit/` with `XCHECK.md`, an `AUDIT.md` template, `templates/`, and empty `findings/`, `passes/` and `plans/`. Nothing is audited yet. The Planner fills `AUDIT.md` in the first session; then one operator command, `xcheck migrate`, loads that plan into `audit/state.json`, the canonical record. Until then the project has no state document, and that is expected: on a tree `install.sh` created, `xcheck status` reports `decision: run-planner` and `xcheck next` dispatches the Planner. Any other tree without `state.json` is refused.
 
 There is no `LEDGER.md` to create: from 0.8 it is a **generated mirror** of `state.json`, rendered whenever state changes, never read back as authority and never hand-edited.
 
 Notes:
 
-- `--type` picks the template `AUDIT.md` starts from: `code` is `templates/AUDIT-code.md`, `text` is `templates/AUDIT-text.md`, and `text` is what an install without the flag gets. It applies only when `audit/AUDIT.md` does not exist yet. An existing one is never replaced; if it is still an unfilled template of the other type, the installer prints the `cp` that switches it.
+- `--type` picks the template `AUDIT.md` starts from: `code` is `templates/AUDIT-code.md`, `text` is `templates/AUDIT-text.md`, and `text` is the default. It applies only when `audit/AUDIT.md` does not exist yet. An existing one is never replaced; if it is still an unfilled template of the other type, the installer prints the `cp` that switches it.
 - The last lines it prints are the next steps, and the first of them is the operator profile (§5.3).
-- `install.sh` never touches audit state: `AUDIT.md` and `LEDGER.md` are created once and then left alone, and `state.json`, findings, passes and plans are not its business at all.
-- It **does** overwrite `XCHECK.md` and the templates unconditionally — it is an installer, and it assumes those files are still xcheck's. To refresh an *existing* installation, use `xcheck upgrade` (§5.6), which checks that assumption instead of making it.
-- `audit/` can be committed with the project (recommended — remediation commits referencing finding IDs make verification much cheaper) or added to `.gitignore` if the audit must stay out of history.
+- `install.sh` never touches audit state. It does overwrite `XCHECK.md` and the templates, because it assumes those are still xcheck's. To refresh an *existing* installation, use `xcheck upgrade` (§5.6), which checks that assumption instead of making it.
+- `audit/` can be committed with the project (recommended: commits that name finding IDs make verification much cheaper) or added to `.gitignore`.
 
-The installer also records what it put there, in two files `xcheck upgrade` later reads as evidence:
+The installer records what it put there, in two files `xcheck upgrade` later reads as evidence:
 
 | File | What it holds |
 |---|---|
 | `audit/.provenance.json` | xcheck version, `XCHECK.md` digest, source ref (`git describe`), state schema version, install time |
 | `audit/MANIFEST.sha256` | every shipped file and its digest at install time |
 
-If neither `shasum -a 256` nor `sha256sum` is on `PATH`, the install still succeeds and says plainly that it wrote no provenance — a manifest nobody can verify is worse than none, because `upgrade` would trust it.
+If neither `shasum -a 256` nor `sha256sum` is on `PATH`, the install still succeeds and says plainly that it wrote no provenance: a manifest nobody can verify is worse than none, because `upgrade` would trust it.
 
 ### 5.3 Create your operator profile (required, once per machine)
 
-Nothing dispatches without one. The profile governs `orchestrated` sessions, the ones `xcheck next`, `xcheck loop` and the launchers that wrap them (§7) start; each of those refuses before a session starts until a profile resolves, and prints where it looked. `xcheck status` names the profile in force on its `policy:` line, or says there is none. The profile is the operator's own file: which command each role runs, the containment it runs inside, and how far you trust the material. It lives **outside** every audited repository, because a session can write anywhere under `audit/` (§8), so `install.sh` cannot create it for you.
+Nothing dispatches without one. The profile governs `orchestrated` sessions: the ones `xcheck next`, `xcheck loop` and the launchers that wrap them (§7) start, each inside a sandbox, with a timeout and a record. Each of those refuses before a session starts until a profile resolves, and prints where it looked. `xcheck status` names the profile in force on its `policy:` line, or says there is none.
 
-`operator-profile.sh` writes one from the template:
+The profile is your own file: which command each role runs, the containment it runs inside, and how far you trust the material. It lives outside every audited repository, because a session can write anywhere under `audit/` (§8), and a project must not set the terms of its own audit. So `install.sh` cannot create it for you. `operator-profile.sh` writes one from the template:
 
 ```bash
 ./operator-profile.sh --trust trusted /path/to/operator.conf
@@ -157,13 +162,13 @@ export XCHECK_OPERATOR_PROFILE=/path/to/operator.conf    # and in your shell's s
 ```
 
 - `--trust` is required, and it has no default. Use `trusted` for code you or your organisation wrote and review. Use `untrusted` for anything else; that also sets `sandbox_profile=container`, so docker must work on the machine. `SECURITY.md` says what each boundary does and does not stop.
-- You name the path, because xcheck never derives one from your home directory. With `$XDG_CONFIG_HOME` set, you can leave the path out: the profile goes to `$XDG_CONFIG_HOME/xcheck/operator.conf`, where xcheck finds it with no export.
+- You name the path; xcheck never derives one from your home directory. With `$XDG_CONFIG_HOME` set you can leave the path out: the profile goes to `$XDG_CONFIG_HOME/xcheck/operator.conf`, where xcheck finds it with no export.
 - The role commands come from the template: Codex for the Planner, Auditor and Verifier, and `claude -p` for the Remediator. Edit the file to change them; every key is explained beside it.
-- It never overwrites a profile. It validates the file with xcheck's own loader before putting it in place, and with `--project DIR` it refuses a path inside that project. It ends by printing the exact line that points xcheck at the file, in your shell's syntax.
+- It never overwrites a profile. It validates the file with xcheck's own loader first, and with `--project DIR` it refuses a path inside that project. It ends by printing the exact line that points xcheck at the file.
 
 To do it by hand instead, copy `docs/operator.conf.example`, set `trust_level`, and point at the copy the same way. §8 lists every key. For a real model in a container, [docs/codex-provider.md](docs/codex-provider.md) is the one supported path: build `images/codex`, run `xcheck doctor`, dispatch.
 
-The operator who pays can set a token ceiling the audited repository cannot raise: `tokens_per_audit` with `tokens_per_session` beside it, in the operator profile ([docs/payer-ceiling.md](docs/payer-ceiling.md)). Unit: tokens. Guarantee: an ADMISSION ceiling — no session is dispatched unless the operator's remaining tokens cover its reservation (tokens_per_session); one in-flight session may exceed its reservation; money is not guaranteed.
+Optional, for the operator who pays: a token ceiling the audited repository cannot raise: `tokens_per_audit` with `tokens_per_session` beside it, in the operator profile ([docs/payer-ceiling.md](docs/payer-ceiling.md)). Unit: tokens. Guarantee: an ADMISSION ceiling — no session is dispatched unless the operator's remaining tokens cover its reservation (tokens_per_session); one in-flight session may exceed its reservation; money is not guaranteed.
 
 ### 5.4 Install the launchers (optional but recommended)
 
@@ -195,48 +200,50 @@ bin/xcheck --project /path/to/your-project --dry-run upgrade   # report only
 bin/xcheck --project /path/to/your-project upgrade
 ```
 
-`upgrade` exists because of a real finding (F-0146): `install.sh` copied the core into your project and after that nobody owned keeping the two in sync — the agents read `audit/XCHECK.md`, the developer edits the root one, and methodology, implementation and installed contract drift apart with nothing reporting it.
+`upgrade` exists because of a finding from xcheck's audit of itself (F-0146): after `install.sh` copied the core into your project, nobody owned keeping the two in sync. The agents read `audit/XCHECK.md`, the developer edits the root one, and the two drift apart with nothing reporting it.
 
-It reports every change **before** making any of them, and it decides from evidence rather than optimism:
+It reports every change before making any of them, and it decides from evidence:
 
 | Target file | What happens |
 |---|---|
-| digest matches `MANIFEST.sha256` | **refreshed** — xcheck shipped it, xcheck owns it |
+| digest matches `MANIFEST.sha256` | **refreshed**: xcheck shipped it, xcheck owns it |
 | absent | **installed** |
 | already identical to this version | left alone |
-| digest differs from the manifest | **refused**, named, untouched — you changed it, so it is yours |
-| no manifest entry (pre-provenance install) | **refused** — xcheck cannot prove it shipped it |
+| digest differs from the manifest | **refused**, named, untouched: you changed it, so it is yours |
+| no manifest entry (pre-provenance install) | **refused**: xcheck cannot prove it shipped it |
 | `AUDIT.md`, `LEDGER.md`, `state.json`, `events.jsonl`, `orchestrator.conf` | never shipped, never candidates |
 
-A refused file keeps its old manifest entry, so it stays refused on the next run instead of being silently adopted. Reconcile it yourself — diff it against the shipped version, keep what is yours — then re-run. `upgrade` exits non-zero whenever anything was refused, so a wrapper cannot mistake "reported problems" for "clean".
+A refused file keeps its old manifest entry, so it stays refused on the next run instead of being silently adopted. Reconcile it yourself (diff it against the shipped version, keep what is yours), then re-run. `upgrade` exits non-zero whenever anything was refused.
 
-If the installed copy is on a **different state schema**, `upgrade` stops without writing anything and names `xcheck migrate`. The schema is what forces a migration, never the release number — that is why the two versions are printed separately.
+If the installed copy is on a different state schema, `upgrade` stops without writing anything and names `xcheck migrate`. Only a schema change forces a migration, so the two versions are printed separately.
 
 ### 5.7 Compatibility
 
 | | Supported |
 |---|---|
-| Python | 3.10, 3.11, 3.12 — the versions `.github/workflows/ci.yml` declares. Observed as of 0.9.1: the **release gate** runs green under 3.10 and 3.11 on the development machine — 3.11 in a clean venv carrying only the pinned toolchain from `pyproject.toml`'s `ci` extra, which is the workflow's own install step executed (`tests/test_ci_contract.py` prints the per-version result and refuses to pass if every version was skipped). 3.12 is **absent on that machine and therefore unobserved**. **The workflow itself has never been observed running**: every green figure in this project comes from one machine. The development repository has no remote at all, and 0.9.5 is the first release pushed to the public mirror — which is also the first thing that will run this workflow. What that run reports belongs in the release after it, not in this sentence. 0.9.1 made the workflow self-sufficient — it installs `build` as well as `ruff`, which is what the 0.9.0 audit found missing — but self-sufficient is not observed. 3.13 was dropped from the classifiers in 0.9.0 rather than given a matrix row that would promise coverage nobody has seen. 0.9.2 tiers the workflow by EVENT — a pull request runs the fast battery in one cell, `main` runs the full suite, a tag runs the package gate, and the six-cell OS-by-Python matrix moved to the weekly schedule — which cuts about 43 minutes of aggregate compute per pull request and changes nothing about the sentence above: the workflow has still never been observed running, so this is a change to what it WOULD do. |
-| Platforms | macOS and Linux. Windows is not supported: the lock protocol, process-group kill and `resource` limits — the `orchestrated` machinery — are POSIX. |
-| Git | 2.20+ — the floor is set by the two commands the tool needs (`git worktree add --detach`, `git describe --tags --always --dirty`), not by a test. No specific old version is verified: the only git ever exercised is the one on the developer machine. |
-| State schema | **1** — written by 0.8.0, read unchanged by 0.8.x and 0.9.x. 0.9.0 changes no schema, so no migration |
+| Python | 3.10, 3.11, 3.12: the versions `.github/workflows/ci.yml` declares. **Observed green** on GitHub Actions at 0.9.8 (2026-10-25, commit 60ff90b on the public mirror): the full suite on `main` (run 40188197283) and the weekly matrix of ubuntu and macOS under all three versions (run 40188197103). Before 0.9.8 the weekly matrix had failed every run since its first, and every green figure came from one development machine, where the **release gate** runs green under 3.10 and 3.11. 3.13 is not in the classifiers, because no matrix row covers it. |
+| Platforms | macOS and Linux. Windows is not supported: the lock protocol, process-group kill and `resource` limits (the `orchestrated` machinery) are POSIX. |
+| Git | 2.20+. The floor is set by the two commands the tool needs (`git worktree add --detach`, `git describe --tags --always --dirty`), not by a test. No specific old version is verified: the only git ever exercised is the one on the developer machine. |
+| State schema | 1: written by 0.8.0, read unchanged by 0.8.x and 0.9.x. 0.9.0 changes no schema, so no migration |
 | Reads schema 1 | xcheck ≥ 0.8.0. Earlier versions have no `state.json` at all and will not understand the tree. |
-| Legacy Markdown tree | converted **once**, by `xcheck migrate`, on your command — never automatically |
+| Legacy Markdown tree | converted once, by `xcheck migrate`, on your command and never automatically |
 | Agent CLIs | any headless CLI you can name in `orchestrator.conf`; `claude`, `codex` and `opencode` are the ones exercised in the pilots |
 
 A release bump never implies a migration; a schema bump always does. Both numbers appear in `xcheck status`, in `audit/.provenance.json`, and in `CHANGELOG.md`.
 
 ## 6. Quickstart: your first audit
 
-Two ways to run the cycle: **manual** (you paste one-liners or invoke launcher skills/commands per session) and **orchestrated** (`xcheck loop` runs sessions for you and stops at your gates). Both use the same files and rules; you can switch freely mid-audit.
+You can run the cycle one session at a time (`xcheck next`, or a launcher that wraps it) or let `xcheck loop` run sessions until it reaches a gate. Both are `orchestrated`. Pasting a role's one-liner into an agent yourself also works, but that session is `uncontained-direct`: no sandbox, no timeout, no record. Use it only on purpose. The steps below show all three; for a first audit, use the launchers or `xcheck next`.
 
-A dry run first is worth 15 minutes: install `audit/` into a throwaway directory and walk one invented finding through every status by hand, including creating and rejecting a class finding. You will learn the mechanics and vocabulary before agents enter the loop.
+Optional, and worth 15 minutes: install `audit/` into a throwaway directory and walk one invented finding through every status by hand, including creating and rejecting a class finding. `bootstrap.md` has the session one-liners.
 
-### Step 1 — Plan
+The commands below are written as `xcheck`. Run `./install-launchers.sh orchestrator` once (§5.4) to put it on your `PATH`, or use `bin/xcheck` from your clone. For a sense of how long and how expensive an audit will be before you start, read [Performance](docs/guide/performance.md#where-the-time-actually-goes).
+
+### Step 1: Plan
 
 Do §5.3 first. Without an operator profile, `/xcheck-plan` and `xcheck next` refuse before any session starts.
 
-Open a session of your planning agent **in the audited project root** and run:
+Open a session of your planning agent in the audited project root and run:
 
 - Codex with skills: `$xcheck-plan`
 - Claude Code / OpenCode with launchers: `/xcheck-plan`
@@ -246,67 +253,64 @@ Open a session of your planning agent **in the audited project root** and run:
   Read audit/XCHECK.md. Role: Planner. Charter: inventory this project and its norms; produce audit/AUDIT.md. Do not audit anything yet.
   ```
 
-The session catalogs the project's norms (style contracts, specs, ADRs, glossaries), picks audit dimensions, slices the material into units, and builds the pass queue — a checklist of "dimension × unit batch" passes.
+The session catalogs the project's norms (style contracts, specs, ADRs, glossaries), picks audit dimensions, slices the material into units, and builds the pass queue, a list of "dimension × unit batch" passes.
 
-**Your check afterwards (2 minutes):** open `AUDIT.md`. Does every dimension name a norm source? Are passes reasonably sized (heuristic: ≤3 chapters of text or ≤2 kloc of code per pass)? Cross out passes you don't want — trimming scope here is cheap and needs no gate.
+**Your check afterwards (2 minutes):** open `AUDIT.md`. Does every dimension name a norm source? Are passes reasonably sized (heuristic: ≤3 chapters of text or ≤2 kloc of code per pass)? Cross out passes you don't want; trimming scope here is cheap and needs no gate.
 
-Once the plan is complete, `xcheck status` reports `stop-migrate`: the plan is waiting for you, not for an agent. Load it with `xcheck --dry-run migrate` and then `xcheck migrate`. From then on the queue changes through `xcheck queue-pass`, `amend-pass` and `cancel-pass`, not by editing `AUDIT.md`.
+Once the plan is complete, `xcheck status` reports `stop-migrate`: the plan is waiting for you. Load it with `xcheck --dry-run migrate` and then `xcheck migrate`. From then on the queue changes through `xcheck queue-pass`, `amend-pass` and `cancel-pass`, not by editing `AUDIT.md`.
 
-### Step 2 — Audit passes
+### Step 2: Audit passes
 
 One session per pass, in queue order:
 
-- Codex: `$xcheck-audit` (auto-picks the first unchecked pass; ask it to run `P-03` to override)
-- Claude Code / OpenCode: `/xcheck-audit` (`/xcheck-audit P-03` overrides)
+- Codex: `$xcheck-audit`; Claude Code / OpenCode: `/xcheck-audit`. Either runs the next queued pass. To change which pass runs next, change the queue (`xcheck amend-pass`, `xcheck cancel-pass`); a pass id typed at the launcher is ignored.
 - By hand:
 
   ```
   Read audit/XCHECK.md and audit/AUDIT.md. Role: Auditor. Charter: pass P-01. Stop conditions per charter.
   ```
 
-The session reads the charter's units attentively, checks them against the dimension's norm, writes finding bodies to `audit/findings/` and a pass report to `audit/passes/` — and records each one with `xcheck file-finding`, closing the pass with `xcheck record-coverage`. The ledger row and the pass's completion are *rendered* from that, not written: there is no row to add and no checkbox to tick. Default cap: 15 findings per pass; scope overflow splits the charter and appends the tail to the queue with `xcheck queue-pass`.
+The session reads the charter's units attentively, checks them against the dimension's norm, writes finding bodies to `audit/findings/` and a pass report to `audit/passes/`, and records each one with `xcheck file-finding`, closing the pass with `xcheck record-coverage`. The ledger row and the pass's completion are *rendered* from that: there is no row to add and no checkbox to tick. Default cap: 15 findings per pass; what does not fit goes back into the queue with `xcheck queue-pass`.
 
-**What to check in a pass report:** the Coverage section must explicitly list what was NOT covered. An empty NOT COVERED with half the units skimmed means the session broke protocol — the pass does not count.
+**What to check in a pass report:** the Coverage section must list what was NOT covered. An empty NOT COVERED with half the units skimmed means the session broke protocol, and the pass does not count.
 
-You can run several passes back to back and triage the accumulated pile — triaging after every pass is not required.
+You can run several passes back to back and triage the pile afterwards; triaging after every pass is not required.
 
-### Step 3 — Triage (your gate)
+### Step 3: Triage (your gate)
 
-- Codex: `$xcheck-triage`; Claude Code / OpenCode: `/xcheck-triage`. In dialogue mode, the agent presents findings in groups (severity × dimension) with quotes; you answer in chat ("accept all critical, reject F-0031, show me CF-0002 in detail"); the agent records exactly what you said with `xcheck set-status`, one invocation per finding.
+- Codex: `$xcheck-triage`; Claude Code / OpenCode: `/xcheck-triage`. The agent presents findings in groups (severity × dimension) with quotes. You answer in chat ("accept all critical, reject F-0031, show me CF-0002 in detail"), and it hands you the exact `xcheck set-status` lines for what you said.
 - By hand: read the pile with `xcheck status` (or `audit/LEDGER.md`, which mirrors it) and record each decision yourself:
 
 ```bash
 xcheck set-status F-0031 rejected
 ```
 
-  Only `accepted`, `rejected` and `deferred` are yours. Batch decisions are normal ("all critical and major → accepted" in one sweep), one command each. When a title alone doesn't settle it, open the finding file — the quote and reasoning are there.
+  Only `accepted`, `rejected` and `deferred` are yours. Batch decisions are normal ("all critical and major → accepted"), one command each. When a title alone doesn't settle it, open the finding file: the quote and reasoning are there.
 
-The verb is the whole act: it refuses any transition §5 does not allow, writes `audit/state.json`, and re-renders the ledger and the finding's frontmatter block from it. There is no sync step and no carrying your decision into files afterwards — and typing into a mirror instead changes nothing at all.
+Recording the decision takes only the verb. It refuses any transition `XCHECK.md` §5 does not allow, writes `audit/state.json`, and re-renders the ledger and the finding's header block. There is no sync step, and typing into a mirror instead changes nothing.
 
-### Step 4 — Remediate
+### Step 4: Remediate
 
-- Codex: `$xcheck-remediate` (name a finding range or CF id in the request to override the auto-pick)
-- Claude Code / OpenCode: `/xcheck-remediate` (`/xcheck-remediate F-0012..F-0019` or a CF id overrides)
-- The override changes only *which* IDs are worked, never the lifecycle gate: every named ID must be in a remediation-eligible status (`accepted`, `reopened`, `validated`, `planned`, or an unfinished member of an open RP). A `reported`/`fixed`/`closed` (or any terminal) ID is dropped or stops the session with the offending statuses — a range never rewrites a finding outside a remediation state.
+- Codex: `$xcheck-remediate`; Claude Code / OpenCode: `/xcheck-remediate`. The orchestrator picks the batch from `audit/state.json`: unfinished and reopened findings first, then accepted class findings, then accepted findings, up to `remediation_batch_size`.
 - By hand:
 
   ```
   Read audit/XCHECK.md and audit/AUDIT.md. Role: Remediator. Charter: findings F-0012..F-0019 (see LEDGER).
   ```
 
-Inside the session, a mandatory sequence per finding:
+Inside the session, a fixed sequence per finding:
 
-1. **Validate** — is the quote still there? is the problem real? No → `disputed` (back to the Auditor) or `obsolete` (defect already gone).
-2. **Census** — search the whole corpus for the pattern. ≥3 instances → escalate to a class finding (CF); members become `superseded-by-class`; the batch continues without them.
-3. **Plan** — `audit/plans/RP-NNNN.md`: exact edits, order, risks.
+1. **Validate**: is the quote still there? is the problem real? No → `disputed` (back to the Auditor) or `obsolete` (defect already gone).
+2. **Census**: search the whole corpus for the pattern. ≥3 instances → escalate to a class finding (CF); members become `superseded-by-class`; the batch continues without them.
+3. **Plan**: `audit/plans/RP-NNNN.md`, with exact edits, order, risks.
 4. **Fix** the material.
-5. **Self-check** — run the finding's "how to verify" procedure, then `xcheck record-fix <ID> --session <your 16-hex session id>`. The verb is what makes the fix provable: it binds the fixing session so §3's Verifier ≠ fixer rule can be checked.
+5. **Self-check**: run the finding's "how to verify" procedure, then `xcheck record-fix <ID> --session <your 16-hex session id>`. An orchestrated session finds its id in the Orchestration context line of its prompt (`$XCHECK_SESSION_ID`). The verb binds the fixing session, so the `XCHECK.md` §3 rule that the Verifier is never the fixer can be checked.
 
-If the project uses git, the session commits with finding IDs in the message — verification will lean on the diffs.
+If the project uses git, the session commits with finding IDs in the message; verification leans on those diffs.
 
-### Step 5 — Verify
+### Step 5: Verify
 
-When `fixed` findings have accumulated — a session of a **different** agent (in the cross-agent default this is automatic):
+When `fixed` findings have accumulated, a session of a different agent judges them (in the cross-agent default this is automatic):
 
 - Codex: `$xcheck-verify`; Claude Code / OpenCode: `/xcheck-verify`
 - By hand:
@@ -315,27 +319,27 @@ When `fixed` findings have accumulated — a session of a **different** agent (i
   Read audit/XCHECK.md and audit/AUDIT.md. Role: Verifier. Charter: all findings in status fixed. You did not write these fixes; try to prove them wrong.
   ```
 
-Per finding: run its verification procedure, then adversarially inspect the surroundings of the change for collateral damage. Verdict recorded with `xcheck record-verdict <ID> --verdict closed|reopened --session <your 16-hex session id>`, held to the same evidence standard; the verb refuses a verdict on the verifier's own fix. For a CF the verification is a fresh census expecting the polarity's clean result — zero instances for a presence class, zero orphans (every anchor's twin-search now returns its twin) for an absence class — which catches both "fixed 12 of 15" and its absence twin "created 12 of 15."
+Per finding: run its verification procedure, then look around the change for collateral damage. The verdict is recorded with `xcheck record-verdict <ID> --verdict closed|reopened --session <your 16-hex session id>`, held to the same evidence standard; the verb refuses a verdict on the verifier's own fix. For a class finding the check is a fresh census expecting a clean result, which catches "fixed 12 of 15".
 
-### Step 6 — Repeat and finish
+### Step 6: Repeat and finish
 
 - `reopened` → next Remediator batch (attempt counter grows; two in a row → `⚠ needs-human`).
 - `disputed` → one written round of Auditor objection in the finding file, then you decide.
 - Passes left in the queue → back to step 2.
 
-**The audit is complete** when the pass queue is empty and every ledger row is terminal. One special case: a remainder of only `deferred` rows is **complete *with* deferred debt** — the automatic cycle is exhausted, but `deferred` is not terminal (§3), so those rows stay as your re-triage debt until you accept or reject them. `$xcheck-status` in Codex, `/xcheck-status` in Claude Code/OpenCode, or `xcheck status` runs this termination check for you.
+The audit is complete when the pass queue is empty and every ledger row is terminal. One special case: a remainder of only `deferred` rows is complete *with* deferred debt: the automatic cycle is exhausted, but `deferred` is not terminal (§3), so those rows stay as your re-triage debt until you accept or reject them. `$xcheck-status` in Codex, `/xcheck-status` in Claude Code/OpenCode, or `xcheck status` runs this termination check for you.
 
 ## 7. Launchers: skills for Codex and Claude Code, commands for OpenCode
 
-**`orchestrated` is the authoritative execution path.** §8's `xcheck next` and `xcheck loop` are how xcheck is meant to be run: they are the only path that puts all eight controls in force — sandbox profile, hard timeout, environment allowlist, log redaction, process-group kill, courier review of the diff, invocation envelope, session receipt. Everything in this section is the other path.
+`orchestrated` is the supported execution path. §8's `xcheck next` and `xcheck loop` are how xcheck is meant to be run. They are the only path that puts all eight controls in force: sandbox profile, hard timeout, environment allowlist, log redaction, process-group kill, courier review of the diff, invocation envelope, session receipt.
 
-**Five of the six launchers are wrappers over that path.** `/xcheck-plan`, `/xcheck-audit`, `/xcheck-triage`, `/xcheck-remediate` and `/xcheck-verify` no longer run a role inside your agent. Each does preflight, says which role the orchestrator will dispatch and why, runs `xcheck next`, and reports what came back — so the work happens under all eight controls, and the launcher is a convenience around the authoritative path instead of a way around it. Each carries that statement in its own body, in one canonical wording enforced byte-for-byte.
+Five of the six launchers are wrappers over that path. `/xcheck-plan`, `/xcheck-audit`, `/xcheck-triage`, `/xcheck-remediate` and `/xcheck-verify` do not run a role inside your agent. Each does preflight, says which role the orchestrator will dispatch and why, runs `xcheck next`, and reports what came back, so the work happens under all eight controls. Each carries that statement in its own body, in one canonical wording enforced byte for byte.
 
-That is a real loss, stated where you meet it: **the conversation is gone.** The role runs as a child process you do not talk to. You cannot steer it mid-thought or hand it an improvised charter — a charter change is now a state change (`xcheck queue-pass`, `xcheck set-status`, …), typed by you at your own terminal. The old direct launchers offered that dialogue by giving up all eight controls, and shipping both while calling one of them authoritative is what the third audit called a release blocker: a warning is not a control.
+You lose the conversation: the role runs as a child process you do not talk to. You cannot steer it mid-thought or hand it an improvised charter. A charter change is a state change (`xcheck queue-pass`, `xcheck set-status`, …), typed by you at your own terminal.
 
-Only `/xcheck-status` is still **`uncontained-direct`**, and it is read-only. It writes nothing and moves no machine state, so there is no diff for a courier to review and no effect for an envelope or a receipt to attest; it carries the full disclosure of what running inside your own tool costs, and the reason it is exempt. See `SECURITY.md`.
+Only `/xcheck-status` is still `uncontained-direct`, and it is read-only. It writes nothing and moves no machine state, so there is no diff for a courier to review and no effect for an envelope to record. See `SECURITY.md`.
 
-`/xcheck-triage` is the one wrapper that hands off to nothing, because it cannot: a triage decision is a human-owned transition and the write boundary allows it only when no session is open. It brings you to the gate, presents the batch, and hands you the exact `xcheck set-status` lines for the decisions you make. You run them.
+`/xcheck-triage` hands off to nothing, because it cannot: a triage decision is yours, and the write boundary allows it only when no session is open. It brings you to the gate, presents the batch, and hands you the `xcheck set-status` lines for your decisions. You run them.
 
 Six launchers, same logical names on every platform:
 
@@ -348,21 +352,19 @@ Six launchers, same logical names on every platform:
 | `$xcheck-verify` | `/xcheck-verify` | Verifier | wrapper: refuses unless the decision is `run-verifier`, then `xcheck next` |
 | `$xcheck-status` | `/xcheck-status` | — (read-only) | direct, and the only one: queue progress, statuses, whose turn, termination check |
 
-Run them in a session opened **in the audited project root**. A per-invocation charter override is no longer accepted anywhere: the orchestrator builds every charter from `audit/state.json`, so what runs next changes when the state changes.
-
-The wrappers are now genuinely thin, and thin in a way the previous version only claimed: preflight → confirm the decision → `xcheck next` → report. They carry no role instructions at all, because they do not play a role. Everything a session is bound by — the lock protocol, the construal gate, the §5 refusal route, session hygiene, the Verifier's independence stance — lives where the dispatched child reads it: `runner.PROMPTS` and `audit/XCHECK.md`. The selftest checks that each of those contracts is present at its new home, so emptying the launchers could not quietly empty the contract. Cross-agent protections are stronger than before, not preserved-as-is: `xcheck next` refuses to dispatch a Verifier over fixes whose `fixed-by` is missing, malformed, or its own session, and the writing lock is held by the orchestrator around the whole transaction rather than by an agent following instructions.
+Run them in a session opened in the audited project root. There is no per-invocation charter override: the orchestrator builds every charter from `audit/state.json`, so what runs next changes when the state changes. The wrappers carry no role instructions; everything a session is bound by lives where the dispatched child reads it, in `runner.PROMPTS` and `audit/XCHECK.md`. The selftest checks that each of those contracts is present there, and `xcheck next` refuses to dispatch a Verifier over fixes whose `fixed-by` is missing, malformed, or its own session.
 
 Re-run the launcher installer after any change to the skills (§5.4, `install-launchers.sh` is idempotent), so the installed copies and the generated OpenCode commands never fall behind.
 
-**Codex note:** launchers install as skills in `~/.agents/skills/`. Codex can invoke them explicitly with `$xcheck-*` or implicitly from a matching request. For non-interactive use, the orchestrator drives Codex through `codex exec` with the same role charters — see the next section.
+**Codex note:** launchers install as skills in `~/.agents/skills/`. Codex can invoke them explicitly with `$xcheck-*` or implicitly from a matching request. For non-interactive use, the orchestrator drives Codex through `codex exec` with the same role charters (see §8).
 
-**How a launcher session talks to you.** All six skills carry the same block of wording rules, generated from `styles/eli5.md` by `ci/render-style.py`: compression styles such as caveman are off, a term of art gets explained the first time it appears, and four kinds of text are reproduced character for character instead of reworded — quoted evidence, finding ids, §5 statuses, and copy-paste commands. Nothing has to be installed into your own agent for this; the block travels inside each skill file. State the limit plainly: the block is **delivered** to every launcher skill through every packaging path, and this repository proves that by reading the bytes each transform produced, but it **does not verify** that a model then wrote in the style the block asks for. `styles/README.md` has the rest, including the optional standalone install.
+**How a launcher session talks to you.** All six skills carry the same block of wording rules, generated from `styles/eli5.md` by `ci/render-style.py`: compression styles such as caveman are off, a term of art is explained the first time it appears, and four kinds of text are reproduced character for character: quoted evidence, finding ids, §5 statuses, and copy-paste commands. Nothing has to be installed into your own agent for this; the block travels inside each skill file. The block is **delivered** to every launcher skill through every packaging path, and this repository proves that by reading the bytes each transform produced, but it **does not verify** that a model then wrote in the style the block asks for. `styles/README.md` has the rest, including the optional standalone install.
 
 ## 8. The orchestrator
 
-`bin/xcheck` removes the courier work: it decides whose turn it is, launches the right agent CLI with the right charter, commits the session's results, and stops at your gates.
+`bin/xcheck` does the courier work for you: it decides whose turn it is, launches the right agent CLI with the right charter, commits the session's results, and stops at your gates.
 
-Everything in §8 — every profile, limit, timeout and commit rule below — describes an **`orchestrated`** session, the kind `xcheck next` and `xcheck loop` launch. A session started by hand through a §7 launcher is `uncontained-direct` and gets none of it; `xcheck status` prints both facts.
+Every profile, limit, timeout and commit rule in §8 describes an `orchestrated` session, the kind `xcheck next` and `xcheck loop` launch. A session started by hand is `uncontained-direct` and gets none of it; `xcheck status` prints both facts. [How it works](docs/guide/how-it-works.md) walks through one session end to end.
 
 ```
 xcheck [--project DIR] next               run one session (whoever's turn it is)
@@ -379,50 +381,27 @@ xcheck [--project DIR] [--dry-run] upgrade   refresh the installed core + templa
 xcheck selftest                           decision-logic + invariant self-checks
 ```
 
-Flags for `loop`: `--step` (pause between sessions), `--max-sessions N` (cost cap), `--budget SECONDS` (wall-clock budget — checked **before each session**, so the loop stops once elapsed time reaches it but a session already running is never interrupted; whichever of `--budget`/`--max-sessions` hits first), `--dry-run` (print the decision and the command without launching).
+Flags for `loop`: `--step` (pause between sessions), `--max-sessions N` (cost cap), `--budget SECONDS` (wall-clock budget, checked before each session; a session already running is never interrupted). The first session always starts; after that, a session is refused when the time left is less than one `session_timeout`, because it could run that long. Whichever of `--budget`/`--max-sessions` hits first stops the loop. `--dry-run` prints the decision and the command without launching.
 
-**Turn priority:** needs-human stop → verification of `fixed` → remediation (unfinished/reopened first, then accepted CF, then accepted findings) → audit passes → triage stop. Before any of that, a new audit with no `state.json` runs its Planner until the plan is complete. The loop halts at: a new audit's plan ready for `xcheck migrate`, triage needed, `⚠ needs-human`, a dispute, a norm-ratification gate, an inconsistent ledger (non-terminal rows with no legal move), a broken/unclosed class dependency, a corrupt ledger or missing coverage report, queue exhausted (or exhausted-with-deferred-debt), a session error, a **non-converging cycle** (`loop_progress_limit` consecutive sessions that repeat the same decision without moving `audit/`), or the **orchestrator's own source changing mid-run** (a self-remediation edited `bin/xcheck`; the loop runs the code image loaded at its start, so restart `loop` to pick up the fix) — each with an explanation of what is expected from you. This is the authoritative, exhaustive list of the **orchestrator's halt points**, not a count of the methodology's human gates: the human gates among these halts (`⚠ needs-human`, a dispute, a norm-ratification gate, and triage) are enumerated canonically in `XCHECK.md` §3 — this list does not re-count them.
+**Turn priority:** needs-human stop → verification of `fixed` → remediation (unfinished/reopened first, then accepted CF, then accepted findings) → audit passes → triage stop. Before any of that, a new audit with no `state.json` runs its Planner until the plan is complete. The loop halts at: a new audit's plan ready for `xcheck migrate`, triage needed, `⚠ needs-human`, a dispute, a norm-ratification gate, an inconsistent ledger (non-terminal rows with no legal move), a broken/unclosed class dependency, a corrupt ledger or missing coverage report, queue exhausted (or exhausted-with-deferred-debt), a session error, a non-converging cycle (`loop_progress_limit` consecutive sessions that repeat the same decision without moving `audit/`), or the orchestrator's own source changing mid-run (a self-remediation edited `bin/xcheck`; the loop runs the code image loaded at its start, so restart `loop` to pick up the fix). Each comes with an explanation of what is expected from you. This is the authoritative, exhaustive list of the orchestrator's halt points. It does not count the methodology's human gates: the human gates among these halts (`⚠ needs-human`, a dispute, a norm-ratification gate, and triage) are enumerated canonically in `XCHECK.md` §3, and this list does not re-count them.
 
-**Your touch points in `loop` mode:** the routine one is install → migrate the plan → triage sittings → final review, and on a clean run that is all. But every other halt above also needs you: `⚠ needs-human`, a dispute, a norm-ratification gate, a session error, a re-triage of deferred debt (the `exhausted-with-deferred-debt` stop — `deferred` is not terminal, §3, so accept or reject to fully close), or a repair (corrupt ledger / missing coverage / broken class link / an inconsistent ledger — non-terminal rows with no move), a non-converging cycle (sessions repeating without progress), or a restart after a self-edit to `bin/xcheck`. Between halts the loop runs by itself; it never silently works around a gate that wants a human, and it never keeps spinning on unchanged state or runs on a stale image of its own edited source.
+**Your touch points in `loop` mode:** the routine ones are install → migrate the plan → triage sittings → final review, and on a clean run that is all. Every other halt above also needs you, and each prints what it expects. Between halts the loop runs by itself. [Usage patterns](docs/guide/usage-patterns.md#pattern-10-when-the-loop-hands-the-turn-back) has a table of the common halts and what to type.
 
 ### orchestrator.conf
 
-Configuration is split in two, and the split is enforced rather than advised.
+Configuration is split in two, and xcheck enforces the split.
 
-**Project keys** live in `audit/orchestrator.conf` inside the repository being audited.
-They say what this audit is *about* — how much a pass may file, when to stop for triage,
-a note appended to prompts, the optional discipline gates. A wrong value makes an audit
-worse, not dangerous.
+**Project keys** live in `audit/orchestrator.conf` inside the repository being audited. They say what this audit is *about*: how much a pass may file, when to stop for triage, a note appended to prompts, the optional discipline gates. A wrong value can make an audit worse; it cannot widen what a session may do.
 
-**Policy keys** live in the **operator profile**, *outside* any audited repository.
-It is resolved in a documented order, and the resolved path and its digest are printed
-at every dispatch:
+**Policy keys** live in the operator profile, *outside* any audited repository. They say what your machine *executes* and the boundary it executes inside. That means the command each role runs, the containment profile, the environment allowlist, the container image, the egress allowlist, resource limits, retry, concurrency, and whether commits are pushed. A session can write anywhere under `audit/`, so a project that carried these keys would be setting the terms of its own audit. Writing one into `audit/orchestrator.conf` is refused at load, naming every offender and the lines to write instead.
 
-1. `xcheck --policy /path/to/operator.conf …` — an explicit path wins;
+The profile is found in this order, and the resolved path and its digest are printed at every dispatch:
+
+1. `xcheck --policy /path/to/operator.conf …`: an explicit path wins;
 2. `$XCHECK_OPERATOR_PROFILE`;
 3. `$XDG_CONFIG_HOME/xcheck/operator.conf`.
 
-A source that names a file that does not exist does not end the search (an operator who
-exported the variable before writing the file gets the next candidate), but a `--policy`
-path that names nothing is an error — a path typed on the command line was meant. If
-nothing resolves, `next` and `loop` **refuse**, printing the order they tried and the
-file to create. There is deliberately no fallback to defaults: every policy key except
-the role commands has a safe default, so falling back would run agent sessions under
-containment nobody chose. `operator-profile.sh` writes one from the template (§5.3); by
-hand, start from [`docs/operator.conf.example`](docs/operator.conf.example).
-The profile is read fail-closed — an unknown key, a project key, or a line that is not
-`KEY=VALUE` is refused by name, because a typo'd `sandbox_profil=container` is a
-containment setting that silently did nothing. Its sha256 is recorded as `policy_digest`
-on every dispatch envelope, so "which policy was in force that day" is answerable
-afterwards. The child never learns where the profile is: `XCHECK_OPERATOR_PROFILE` is the
-one `XCHECK_*` variable stripped from the session's environment. They say
-what the operator's machine *executes* and the boundary it executes inside: the command
-each role runs, the containment profile, the environment allowlist, the container image,
-the egress allowlist, resource limits, retry, concurrency, and whether commits are
-pushed. A session can write anywhere under `audit/`, the courier ships that edit, and the
-next dispatch would execute it — so a subject that carried these keys would be setting
-the terms of its own audit. Writing one into `audit/orchestrator.conf` is **refused at
-load**, naming every offender and the exact lines to write instead.
+A missing file does not end the search, but a `--policy` path that names nothing is an error. If nothing resolves, `next` and `loop` refuse, printing the order they tried. There is no fallback to defaults: that would run agent sessions under containment nobody chose. `operator-profile.sh` writes one from the template (§5.3); by hand, start from [`docs/operator.conf.example`](docs/operator.conf.example). The profile is read fail-closed: an unknown key, a project key, or a line that is not `KEY=VALUE` is refused by name, because a typo'd `sandbox_profil=container` is a containment setting that silently did nothing. Its sha256 is recorded as `policy_digest` on every dispatch, and the child never learns where the profile is.
 
 | Key | Where | Default | Meaning |
 |---|---|---|---|
@@ -477,88 +456,81 @@ load**, naming every offender and the exact lines to write instead.
 | `egress_uplink` | **operator profile** — outside the subject | `bridge` | the docker network the broker's second leg attaches to — where the allowlisted hosts actually are |
 | `egress_broker_image` | **operator profile** — outside the subject | `alpine/git@sha256:3b447678…` | what the sidecar runs, **pinned by digest** for the same reason the audit container is: the broker is the thing deciding what leaves the run |
 
-Every key above has a **safe default when absent**, so an existing `orchestrator.conf` keeps working and gets the new protections without an edit.
+Every key above has a safe default when absent. An existing `orchestrator.conf` keeps working and gets new protections without an edit. [Performance](docs/guide/performance.md) explains which of these keys make an audit faster or cheaper, and what each costs.
 
-**Withdrawn keys.** `diff_scope`, `evidence_cache` and `evidence_dir` were public keys until the fourth industrial-readiness audit and are gone now. Each named a library that no production path called, so setting one changed nothing while the documentation said otherwise. Both are now **refused by name** in whichever file they appear in, rather than ignored — a conf key that silently does nothing is worse than one that is not offered. The modules are still in the tree, still tested, and marked EXPERIMENTAL with the condition that would promote them: see [docs/experimental.md](docs/experimental.md).
+**Withdrawn keys.** `diff_scope`, `evidence_cache` and `evidence_dir` were public keys until xcheck's fourth audit of itself. Each named a library that no production path called, so setting one changed nothing. All three are now refused by name in whichever file they appear in, rather than ignored. The modules are still in the tree, still tested, and marked EXPERIMENTAL with the condition that would promote them: see [docs/experimental.md](docs/experimental.md).
 
 ### Execution model
 
-The child agent CLI reads an **arbitrary repository**, which is untrusted input: a README, a source comment or a test fixture in it can be written to talk the agent into doing something. So the agent is bounded by capability, not only by prompt.
+The agent reads an arbitrary repository, which is untrusted input: a README, a source comment or a test fixture in it can be written to talk the agent into doing something. So the sandbox limits what the agent can do, whatever its prompt says:
 
-- **Sandbox profiles.** `worktree` (default for writing roles) runs the session in a disposable `git worktree` created off the current HEAD **in a system temp dir**, seeded with your uncommitted work so the session sees the tree it would have seen in place; its changes come back as a patch and are committed by the usual courier. `readonly` (default for Auditor and Verifier, which judge the material and have no business editing it) is the same worktree, except a change outside `audit/` is **refused, not applied** — the patch is kept under `audit/orchestrator-logs/` so the work is not lost. `none` is an explicit opt-out that runs the child in the project itself. If the worktree cannot be created, the runner **refuses to launch**; it never degrades to running in the project.
-- **OS-enforced containment (opt-in).** `sandbox_profile=container` runs the session inside docker: `--network=none`, an empty tmpfs `$HOME`, the seeded clone mounted **read-only** at `/src` (since 0.9.6 not the live checkout: git-ignored files the seed does not present are not visible there either), exactly two writable mounts (a disposable *clone* at `/work` and one output dir), non-zero `--cpus`/`--memory`/`--pids-limit`, `--cap-drop ALL`, `--security-opt no-new-privileges`, and **no host socket** — never the docker socket. The tree is a clone rather than a linked worktree because a worktree's `.git` is a file pointing at a host path that does not exist inside the container. Requesting `container` without a working docker **refuses**, naming docker and the three alternatives; it never falls back. What the profile enforced is recorded in the envelope as a capability report, and `xcheck status` prints whether the last session's containment was *verified at launch*. The guarantees are tested by escape probe — each attempt runs under `container` (must fail) and under `worktree` (must succeed) in the same test — and `SECURITY.md` states per profile which probe proved which row. The default image carries `sh`, `git` and busybox only: set `container_image` to an image with your agent CLI. **The digest pin is enforced** — an unpinned reference refuses rather than launching, because the escape matrix was measured against specific bytes and a mutable tag is not those bytes. `unsafe_allow_unpinned_image=on` waives it and writes the waiver into the run's log.
-- **Contained skip-permissions.** `--dangerously-skip-permissions` (and equivalents like `--yolo`) is **permitted only under an isolating profile** and refused with an addressed message otherwise. It is not deleted: removing it would push you to run sessions outside xcheck entirely, which removes every control at once. The ambient grant becomes a contained one.
-- **Environment allowlist.** The child environment is *built*, not inherited: `PATH`, `HOME`, `LANG`, `TERM`, `TMPDIR` and friends, plus the `XCHECK_*` orchestration variables and anything you name in `env_allowlist`. Everything else is dropped, so cloud credentials, signing keys and production tokens are not inheritable by accident.
-- **Hard timeout and process-group kill.** The child leads its own process group (`start_new_session`); on timeout it gets SIGTERM, `kill_grace` seconds, then SIGKILL — to the **group**, so a grandchild the agent spawned dies with it. Every `subprocess` call in the package carries an explicit `timeout`.
-- **Log redaction.** Child output is scrubbed before it is written: values of secret-ish environment variables passed to the child, plus well-known token shapes. Stated honestly — this is best-effort against **accident** (an agent echoing a key it was handed), not against an adversary with write access to the child. The control that bounds an adversary is the allowlist, not the redactor.
-- **Session lifecycle.** Every session ends in exactly one typed outcome: `ok`, `refused`, `blocked`, `provider-error`, `timeout`, `crash`, or `cancelled` — so "the agent declined" is not confused with "the provider fell over". `xcheck cancel` requests an orderly stop; the orchestrator kills the child's process group, releases the lock, and does **not** apply the cancelled session's changes.
-- **Only an `ok` session's changes are applied (0.9.1).** Every other outcome — `refused`, `blocked`, `provider-error`, `timeout`, `crash` — has its work captured into a **quarantine bundle** under `audit/quarantine/` and applied to nothing: the patch, a manifest naming the outcome, session id, patch sha256, HEAD at capture and the paths it touches, and a README saying how to inspect, apply or discard it. Canonical state does not move, so a session that did not finish decides nothing. Until 0.9.0 these outcomes were couriered into the project like a success, which meant a crashed session silently modified the repository under audit. The console names the bundle and `xcheck status` reports the pending count, human and `--json`, for the operator who was not watching.
-- **A retry must prove the absence of material effects (0.9.1).** Before re-dispatching a `provider-error` or a `timeout`, the orchestrator compares the project against the snapshot it took before the session — tracked changes, untracked files, `audit/` artifacts and a moved git HEAD, minus its own bookkeeping (the session log, the envelope journal, `audit/state.json`) — and refuses the retry if anything moved, naming the files. The session's own `RunResult` is consulted too and either answer alone blocks: neither authorises a retry, both can veto it. The console prints how many paths were compared, so "nothing changed" cannot be the answer of a check that looked at nothing. **Residual risk, stated plainly:** this bounds repeated effects *inside the repository*. A session that already sent an email, opened a pull request, posted to an API or spent provider budget before its transport failed has done something xcheck cannot see and cannot undo; a retry re-runs the charter that did it. That is the reason `retry_limit` defaults to `0` and raising it is an operator's decision about their own charters, not a setting to turn on by default.
+- **Sandbox profiles.** `worktree` (default for writing roles) runs the session in a disposable `git worktree` in a system temp dir; its changes come back as a patch the courier commits. `readonly` (default for Auditor and Verifier) is the same, except a change outside `audit/` is refused, not applied. `none` is an explicit opt-out. `container` runs the session inside docker with no network, an empty `$HOME`, the source mounted read-only, and bounded CPU, memory and processes. It is opt-in, and it refuses rather than falling back when docker is missing. If a worktree cannot be created, the runner refuses to launch. `SECURITY.md` states per profile which escape probe proved which guarantee.
+- **Contained skip-permissions.** `--dangerously-skip-permissions` and its equivalents are permitted only under an isolating profile and refused otherwise.
+- **Environment allowlist.** The child environment is *built*, not inherited: `PATH`, `HOME`, `LANG`, `TERM`, `TMPDIR` and friends, the `XCHECK_*` variables, and anything you name in `env_allowlist`. Cloud credentials and production tokens are not inheritable by accident.
+- **Hard timeout and process-group kill.** On `session_timeout` the child's whole process group gets SIGTERM, then SIGKILL after `kill_grace` seconds, so a grandchild the agent spawned dies with it. Four deadlines kill a session earlier when it shows no sign of working.
+- **Log redaction.** Child output is scrubbed of known secret values and token shapes before it is written. It is best-effort against accident, not against an adversary; the allowlist is the control that bounds an adversary.
+- **Session lifecycle.** Every session ends in exactly one typed outcome: `ok`, `refused`, `blocked`, `provider-error`, `timeout`, `crash`, `cancelled` or `stalled` (killed by a deadline). Only an `ok` session's changes are applied; any other outcome's work goes into a **quarantine bundle** under `audit/quarantine/`, and `xcheck status` counts the bundles waiting for you.
+- **A retry must prove nothing changed.** A `provider-error` or a transport `timeout` is retried only if `retry_limit` allows it and the project matches the snapshot taken before the session. **Residual risk:** this sees the repository only. A session that already sent an email, opened a pull request, posted to an API or spent provider budget has done something xcheck cannot see; a retry re-runs the charter that did it. That is why `retry_limit` defaults to `0`.
+
+[How it works](docs/guide/how-it-works.md#sandbox-profiles-and-what-each-one-holds) has the details of each profile, and [`SECURITY.md`](SECURITY.md) the full trust model.
 
 ### Invocation envelope, events, and measured independence
 
-A 16-hex session id proves that *some other session* existed. It does not prove another provider, another model, another toolchain or another operator. So every dispatch is recorded as an **invocation envelope** — thirteen fields, written by the orchestrator, in `state.sessions[]`:
+Every dispatch is recorded as an **invocation envelope**, written by the orchestrator, in `state.sessions[]`:
 
 `provider` · `agent_model` · `executable` + `executable_version` · `role` · `charter_hash` · `prompt_hash` · `state_revision` · `head_before` · `head_after` · `session_id` · `sandbox_profile` · `duration_s` + `exit_status` · `log_digest`
 
-The hashes are sha256 over the exact bytes dispatched, and `log_digest` is of the **redacted** log as written, so anyone holding the log can check it. `executable_version` is a sha256 of the resolved executable's own bytes, obtained **without running it**: the orchestrator identifies the agent CLI it is about to launch, it does not interview it. Until 0.9.2 this field held the output of `<exe> --version`, which meant the first thing every dispatch did was execute an operator-configured binary on the host — before `sandbox.enter()`, so under `container` as much as under `none` (F-0098). Where the executable cannot be resolved or read, the field is `unknown`. A value that cannot be determined — an agent CLI in no provider table, a role command that names no model — is recorded as `unknown`, **explicitly**: an absent field and a guessed one are the two ways a provenance record lies.
+The hashes are sha256 over the exact bytes dispatched, and `log_digest` is of the redacted log, so anyone holding the log can check it. `executable_version` is a sha256 of the agent program's own bytes, taken without running it. A value that cannot be determined is recorded as `unknown`, explicitly. No write verb reaches `state.sessions[]`: the envelope is the orchestrator's testimony, never the session's claim about itself. That is what lets `record-fix` and `record-verdict` bind `fixed-by` to the open dispatch.
 
-There is deliberately **no write verb** that reaches `state.sessions[]`. The envelope is the orchestrator's testimony about a session, never the session's own claim about itself — which is what lets `fixed-by` be *bound*: `record-fix` and `record-verdict` take the session id from the open dispatch record, and an agent that supplies a different one is refused with a message naming both. In a project with no envelopes at all (a hand-run audit) the claim still stands, but it is printed as `provenance UNBOUND` rather than passed off as evidence.
-
-**Measured independence.** A verdict now records *how* independent it actually was, computed from the two envelopes:
+**Measured independence.** Each verdict records how independent it was, computed from the two envelopes:
 
 | Level | Meaning |
 |---|---|
 | `cross-provider` | two different vendors ran the two sessions |
-| `cross-model` | same provider, different model — a weaker claim |
-| `same-provider-different-session` | same provider and model, different session — **degraded** |
-| `unrecorded` | no envelope on one side — not measurable, **degraded** |
-| `same` | the same session — refused (§3: the Verifier is never the fixer) |
+| `cross-model` | same provider, different model; a weaker claim |
+| `same-provider-different-session` | same provider and model, different session; degraded |
+| `unrecorded` | no envelope on one side; not measurable, degraded |
+| `same` | the same session; refused (§3: the Verifier is never the fixer) |
 
 `metrics` prints the distribution and marks the degraded levels; a fallback is acceptable only while it is displayed as one.
 
-**The ceiling, stated plainly:** none of these levels proves the absence of shared training data, a shared cache, or the same human driving both sides. `cross-provider` means two different vendors ran the two sessions. That is all it means. Two `unknown` providers are never read as a difference.
+None of these levels proves the absence of shared training data, a shared cache, or the same human driving both sides. `cross-provider` means only that two different vendors ran the two sessions. Two `unknown` providers are never read as a difference.
 
-**`audit/events.jsonl`** is an append-only stream — opened `"a"`, one compact JSON object per line, each with `ts`, `event`, `session_id` and a typed payload. Events: `session_dispatched`, `session_finished` (with the typed outcome), `state_transition` (one per **applied** write verb — a refusal changed nothing and emits nothing), `gate_reached`, `lease_acquired`, `lease_released`, `session_abandoned`. It **is committed** by the courier, deliberately: durability of the record is the product here, and a gitignored stream does not survive a clone. The cost is a chatty history — the file grows by a handful of lines per session and is never rewritten, so prune it by rotation if it becomes unwieldy, never by editing lines in place.
-
-It is also excluded, along with `state.sessions[]` and `state_revision`, from the no-progress fingerprint the loop uses: the orchestrator's own bookkeeping about a session is not the session's effect on the material, and counting it would make an agent that did nothing look productive forever.
-
-**`--json` output.** `status --json` and `metrics --json` emit a payload carrying `output_schema_version`, validated **by the producer** against a declared closed schema — an unknown key, a missing key or a wrong type is refused rather than printed. Human output is unchanged beside it. That is the lesson of the Markdown control plane applied to the machine surface: a contract only the consumer checks is not a contract.
+**`audit/events.jsonl`** is an append-only stream, one JSON object per line: sessions dispatched and finished, every applied write verb, gates, leases. The courier commits it, so the record survives a clone. Its hash chain and its anchor in `state.json` make a rebuilt stream detectable, and `xcheck recover` reports a gap it can prove. **`--json` output** from `status` and `metrics` is validated by the producer against a declared closed schema. [How it works](docs/guide/how-it-works.md#the-record-events-hash-chain-recovery) explains the chain.
 
 ### Lock protocol (a lease)
 
-All writing sessions — orchestrated and launcher-started — share `audit/.lock`, a DIRECTORY holding an `owner` record (JSON: pid, role, started, host). Acquisition is atomic (`mkdir` — the second writer gets EEXIST); release is owner-checked (a session removes only a lock whose owner record it wrote, so it can never delete a lock it does not own). A live foreign lock aborts the run. Plain `xcheck unlock` never removes a lock — it only diagnoses whether one is provably stale; removing a lock identified by a pathname cannot be made race-free against a concurrent clear + re-acquire (F-0095), so every removal goes through `xcheck unlock --force`, where the operator asserts no writing session is active. `--force`'s own residual `read→unlink` window is a **palliative** — an operator-asserted trade-off, not elimination of the race; the real elimination is a kernel advisory lock (`fcntl.flock`), tracked as backlog **C6** (`docs/backlog-2-plan.md`). This enforces the "one writing session at a time" rule mechanically. A pre-directory `.lock` FILE (old protocol) is a legacy lock: `xcheck unlock --force` clears it, and there is no auto-migration.
-
-The lock is also a **lease**: while a session runs the orchestrator renews `audit/.lock/heartbeat`. A lock whose heartbeat stopped more than `lease_ttl` seconds ago is reclaimed by plain `xcheck unlock` — **no `--force`** — because a stopped heartbeat is positive evidence the owner is gone, which a pathname alone never was. A lock with a *live* heartbeat is never reclaimable that way, and one with *no* heartbeat (an older xcheck, or a hand-run launcher session) falls back to the pid rules above unchanged. So the wedged-session recovery no longer needs the operator to assert something they cannot see.
+All writing sessions share `audit/.lock`, a directory created atomically, so only one writing session runs at a time. While a session runs, the orchestrator renews a heartbeat inside it. A lock whose heartbeat stopped more than `lease_ttl` seconds ago is reclaimed by plain `xcheck unlock`, because a stopped heartbeat is evidence the owner is gone. A lock with a live heartbeat is never reclaimed that way. `xcheck unlock --force` removes a lock on your word that no writing session is running anywhere; use it only when you are sure.
 
 ### Courier commits
 
-After every session the orchestrator commits **only the session's own new dirt** — a snapshot-diff of `git status` before and after. Pre-existing uncommitted work in your project is never swept into an audit commit — this holds without exception. When a file the session would otherwise write carries pre-existing operator work — a **mixed-ownership path**: e.g. the terminal-triage sync would rewrite a `status:` line in a finding file you had already edited before running `next` — the orchestrator does not try to split the file into its two authors (a self-written diff parser is one more guess it refuses to make), and it does not write its own change into your file either. It leaves that path **entirely untouched**, names it, and stops; the whole file stays in your worktree exactly as you left it. And because the file keeps its old status, the audit will **not report done** while the handoff is open — the same silent-gap rule that governs coverage. Resolve it by committing or discarding your edit; the next `next` then applies the decision cleanly and commits it. The trade-off is deliberate — part of the session's own work waits for you rather than risk carrying your pre-existing edit into an audit commit. So the orchestrator commits every path it touched cleanly, and only those; a mixed path is never one of them, and completion is never certified over one.
+After every session the orchestrator commits only the session's own new dirt: the difference between `git status` before and after. Your pre-existing uncommitted work is never swept into an audit commit. If a path the session would write already carries your uncommitted edit, the orchestrator leaves that path untouched, names it, and stops; the audit will not report done until you commit or discard your edit. On a project without git no commit is made, and the session's changed files are the handoff.
 
 ### Health checks
 
-- `xcheck lint` — orphaned rows/files, status drift, class-membership breaks, malformed rows, non-canonical `next` tokens. Read-only, exit 1 on issues.
-  - Two kinds of check, by design (CF-0001, norm-owner ruling): **single-record** checks (a field's presence, format, enumeration, range, value syntax) run through the *shared* validator that `next`, `status`, and `metrics` also route through — so a value one refuses can never reach another as if valid. **Cross-record semantic** checks that must load and compare *other* records — `members` existence, `next`-owner ↔ status consistency, `class` ↔ CF, a `dimension` slug against the `AUDIT.md` list — stay lint-surface only: the decision path is kept cheap and local rather than loading the whole corpus to route one finding.
-- `xcheck metrics` — auditor accuracy (% of accepted findings surviving validation), fix durability (% of verdicts whose closure an oracle **re-observed** on newer material — since 0.9.6; age and first-pass closure no longer count), each finding's evidence level (`reported`, `confirmed`, `fixed`, `independently-verified`, `re-observed`, and whether a closure rests on `--evidence manual:`), findings by dimension/severity/status, class-finding totals, attempts distribution, and **token cost per canonical transition** — read from the `tokens used` figure each session log already carries, recorded on the session's own event at finish. Per transition and not per session on purpose: a run can make its sessions cheaper while making everything it actually achieved more expensive. A session whose log reports no figure is counted as unmeasured and contributes to no total — never as a zero. Money cost is still not printed: that needs provider billing data this tool does not see.
-- `xcheck dashboard` — writes `audit/dashboard.html`: one self-contained page over `status --json` and `metrics --json`. It is a **view**, and deliberately a thin one — it computes nothing, so every number on it is a number those two documents already publish. `xcheck/dashboard.py` contains no arithmetic and no `len`/`sum`/`round` at all, which `tests/test_dashboard.py` asserts over the module's AST; a rendered figure that appears in neither payload fails a traceability walk over the page. No script, no font, no image, no network request: a page describing a private audit must have no way to phone home. `--json` prints the two payloads instead of rendering. If a figure you want is missing, add it to `metrics` — a second place that computes it is a second source of truth.
+- `xcheck lint`: orphaned rows or files, status drift, class-membership breaks, malformed rows. Read-only, exit 1 on issues. Single-record checks share the validator that `next`, `status` and `metrics` use; checks that compare records stay in `lint`.
+- `xcheck metrics`: auditor accuracy, fix durability (closures an oracle re-observed on newer material), each finding's evidence level, findings by dimension, severity and status, class-finding totals, attempts, and token cost per canonical transition. A session that reported no token figure is counted as unmeasured, never as zero. No money figure is printed: that needs billing data this tool does not see.
+- `xcheck dashboard`: writes `audit/dashboard.html`, one self-contained page over `status --json` and `metrics --json`. It is a static view: no network access, and no number those two payloads do not already publish.
 
 ## 9. Agent mapping and cross-agent discipline
 
-Default mapping — and the reason this is called *cross*-check:
+Default mapping, and the reason for the name *cross*-check:
 
 | Role | Default agent |
 |---|---|
 | Planner, Auditor, Verifier | Codex |
 | Remediator | Claude |
 
-The point: the agent that judges a fix is never the agent (let alone the session) that wrote it. Fresh eyes are the product; everything else is logistics.
+The agent that judges a fix is never the agent (let alone the session) that wrote it.
 
-All of it is remappable in `orchestrator.conf` — any capable agent can play any role. Legitimate reasons to remap:
+All of it is remappable in the operator profile; any capable agent can play any role. Legitimate reasons to remap:
 
-- **Provider content policy.** On security-sensitive dimensions (memory-safety, undefined behavior, exploitability) a provider's moderation may refuse the defensive review outright. The methodology is agent-agnostic: point that dimension's Auditor/Verifier at an agent that isn't blocked — one line in the conf.
+- **Provider content policy.** On security-sensitive dimensions (memory-safety, undefined behavior, exploitability) a provider's moderation may refuse the defensive review outright. The methodology is agent-agnostic: point that dimension's Auditor/Verifier at an agent that isn't blocked. It is one line in the operator profile.
 - **Single-vendor setups.** Running everything on one agent works mechanically, but you lose the strongest safeguard. The minimum worth insisting on: the Verifier is a separate fresh session that has never seen the fix.
 
-**Codex sandbox note:** Codex CLI sessions may keep `.git` read-only, so a Codex Verifier sometimes cannot commit its verdict updates — this is Codex's own sandbox, not an xcheck control, and it applies in both launch modes. Under `orchestrated` the courier finishes those commits automatically; under `uncontained-direct` check `git status` after each Codex session.
+**Codex sandbox note:** Codex CLI sessions may keep `.git` read-only, so a Codex Verifier sometimes cannot commit its verdict updates. This is Codex's own sandbox, not an xcheck control, and it applies in both launch modes. Under `orchestrated` the courier finishes those commits automatically; under `uncontained-direct` check `git status` after each Codex session.
+
+[Usage patterns](docs/guide/usage-patterns.md#pattern-4-two-providers-for-a-real-second-opinion) shows how to check which independence you got.
 
 ## 10. The audit/ directory in your project
 
@@ -577,89 +549,43 @@ audit/
 └── orchestrator.conf    # optional; per-project orchestrator config
 ```
 
-The **finding file is the single source of truth** for that finding — evidence, validation, remediation, verification all live in it. The ledger is a derived index with one exception: your triage decisions flow ledger→file, applied by the next agent session that touches the finding. `xcheck lint` checks the two never silently diverge.
+`state.json` is the canonical record: statuses, the queue, limits, class membership, sessions. Each **finding file** holds that finding's whole story in prose: the evidence, validation, remediation and verification. `LEDGER.md` and each finding's header block are rendered from `state.json`; editing them changes nothing, and every command refuses the tree until the edit is undone or `xcheck render-views` overwrites it. `xcheck lint` checks the record and the files never silently diverge.
 
 ## 11. Class findings: fixing the disease, not the symptom
 
-When a Remediator's census finds the same defect pattern **at or above `class_threshold` instances** (default 3), it opens a class finding (CF) with the full census, the root cause (usually a missing or ambiguous norm), and a strategy on an escalation ladder:
+When a Remediator's census finds the same defect pattern at or above `class_threshold` instances (default 3), it opens a class finding (CF) with the full census, the root cause (usually a missing or ambiguous norm), and a strategy on an escalation ladder:
 
 - **(a)** fix all census instances;
 - **(b)** (a) + fix the norm so the class cannot recur;
-- **(c)** (b) + an automated guard (grep check, lint rule, CI script) — the class becomes structurally hard to reintroduce.
+- **(c)** (b) + an automated guard (grep check, lint rule, CI script), so the class becomes structurally hard to reintroduce.
 
-A CF goes through **your triage** like any finding — accepting it sanctions a global change, which is exactly why it needs the gate even though a Remediator created it mid-batch. Look at the Census section (is the list complete?) and the strategy rung (too aggressive? too timid?). Rejecting a CF loses no work: its members return to the queue as individual fixes.
+A CF goes through your triage like any finding: accepting it sanctions a change across the whole project. Check the Census section (is the list complete?) and the strategy rung (too aggressive? too timid?). Rejecting a CF loses no work: its members return to the queue as individual fixes.
 
-**Norm ratification gate — an exceptional human gate distinct from triage (one of those enumerated in `XCHECK.md` §3):** if a (b)/(c) fix would change a norm, or must pick a side in a conflict between norms, the Remediator stops after writing the plan and routes the conflict to **you as the norm owner** (not to triage — triage only writes the status column). The stop is a machine-readable brake recorded in the CF file, not just prose: frontmatter `blocked: norm-ratification` plus `norm-ruling: pending`, and a `## Norm ruling` section stating the conflict and the candidate sides. The Remediator raises it with `xcheck block-on-norm <CF-ID>`. To lift it you write your reasoning into `## Norm ruling` and record the decision — `xcheck record-ruling <CF-ID> --norm N1 --ruled-by human:<you>` (or `--norm N1-over-N4` when one norm beats another); only then will `xcheck record-fix` accept a fix on that CF. The verb refuses a `--ruled-by` that is not a human: the norm's owner is a person, and the tool records that decision rather than making it. The gate is **fail-closed**: an absent, `pending`, or unrecognized `norm-ruling` value keeps the CF stopped, and a `## Norm ruling` note with no recorded ruling does **not** unblock it. A class fix in the wrong direction multiplies one error across the whole corpus — hence the brake.
+**Norm ratification gate.** An exceptional human gate, distinct from triage (`XCHECK.md` §3). If a (b)/(c) fix would change a norm, or must pick a side in a conflict between norms, the Remediator records the stop with `xcheck block-on-norm <CF-ID>` and the CF waits for you as the norm owner. Write your reasoning into the CF's `## Norm ruling` section and record the decision with `xcheck record-ruling <CF-ID> --norm N1 --ruled-by human:<you>` (or `--norm N1-over-N4` when one norm beats another). Only then will `xcheck record-fix` accept a fix on that CF. The gate is fail-closed: an absent, `pending` or unrecognised ruling keeps the CF stopped, and a note with no recorded ruling does not unblock it.
 
-Verification of a CF re-runs the census expecting the polarity's clean result — zero instances for a presence class, zero orphans (every anchor's twin-search now returns its twin) for an absence class — or an explicit documented-exceptions list. "Fixed 12 of 15" (and its absence twin "created 12 of 15") = `reopened`.
+Verification of a CF re-runs the census expecting the clean result (zero instances for a presence class, zero orphans for an absence class) or an explicit list of documented exceptions. "Fixed 12 of 15" (and its absence twin "created 12 of 15") is `reopened`. [The methodology](docs/guide/methodology.md#fixing-the-disease-census-and-class-findings) explains why the class is the unit.
 
 ## 12. Candidate mechanisms (default off)
 
-Three mechanisms ship in this release as **candidates**: implemented, tested, and **off by
-default**. They are recorded here because they change what an operator can turn on, not
-because their effect is proven — the measurement that would settle that has not been run.
+Three mechanisms ship as candidates: implemented, tested, and off by default except where noted. They are listed so you can turn them on; their effect has not been measured.
 
 ### Recorded refusal
 
-An agent role that accepts a charter and cannot execute it records a refusal instead of
-halting silently: one value from a closed six-word vocabulary (`out-of-competence`,
-`blocked-dependency`, `charter-ambiguous`, `norm-conflict`, `material-missing`,
-`cost-exceeded`) plus prose saying what is missing. The mechanism binds exactly the four
-agent-executed roles, each to the **one durable target** its charter gives it: the Remediator
-and the Verifier — whose charter *is* a set of findings — write the typed `refusal:` field
-and a `## Refusal` section into the finding; the Planner (charter → `AUDIT.md`) records the
-same reason-plus-prose in `AUDIT.md`, and an Auditor pass (charter → a pass report) in its
-pass report. Triage is not one of these roles — it is the human decision gate, which parks a
-finding as `deferred` or `rejected`, never a refusal.
+A role that accepts a charter and cannot do it records a refusal instead of halting silently: one value from a closed vocabulary (`out-of-competence`, `blocked-dependency`, `charter-ambiguous`, `norm-conflict`, `material-missing`, `cost-exceeded`) plus prose saying what is missing. The Remediator and Verifier record it on the finding with `xcheck record-refusal`; the Planner records it in `AUDIT.md`, an Auditor in its pass report. `xcheck lint` rejects a value outside the vocabulary and a reason with an empty `## Refusal` section. `xcheck status`, `next` and `loop` then stop with `stop-refusal` naming the finding and the reason instead of re-dispatching the same charter. A refusal does not change the finding's status: the charter stays in force. Always on; there is no flag, and a project that never records one sees no change.
 
-What the code does: `xcheck lint` rejects a `refusal:` value outside the vocabulary and
-rejects a reason code whose `## Refusal` section is empty; `xcheck status`/`next`/`loop` return
-`stop-refusal` naming the finding and the reason instead of re-dispatching the same charter.
-Recording a refusal does **not** change the finding's `status` — the charter stays in force.
+### Scope typing of a fix: `scope_typing` (default `off`)
 
-Always on; there is no flag. It adds a field that was previously absent, so a project that
-never writes one sees no change.
+When a Remediator records a fix, it declares what the fix covers: the machine half with `xcheck record-fix <ID> --session <16-hex> --scope "<what the guarantee covers>"`, the prose half as an `## Admitted scope` section with `### Covers` and `### Does not cover`. With `scope_typing=on`, `xcheck lint` fails a `fixed` finding missing either half. It does not judge whether the declaration is true; that comparison is the Verifier's work.
 
-### Scope typing of a fix — `scope_typing` (default `off`)
+### Construal gate: `construal_gate` (default `off`)
 
-When a Remediator sets a finding `fixed`, it declares what its fix admits: the machine half
-with `xcheck record-fix <ID> --session <16-hex> --scope "<what the guarantee covers>"`, and
-the prose half as an `## Admitted scope` section with `### Covers` and `### Does not cover`.
+Before a session may touch the material, it writes its own reading of the charter (task, approach, assumptions, stop conditions, out of scope) to `audit/construals/<key>.md`, and a different party admits it. With `construal_gate=on`, the orchestrator returns `run-construal` when no construal exists, `stop-construal` when one is not admitted yet, and dispatches the real charter only once it is. `xcheck lint` refuses a construal admitted by its own session. There is no pre-authorization: admission is always a separate act by someone who did not write it.
 
-What the code does with `scope_typing=on`: `xcheck lint` fails a `fixed` finding that has no
-`admitted-scope`, no `## Admitted scope` section, or an empty half — naming the missing
-residue specifically. `closed` findings are never checked.
-
-What the code does **not** do: it does not judge whether the declaration is true of the fix.
-The `demanded ⊆ admitted` comparison is the Verifier's work, written into the Verifier's
-contract, not a predicate the tool evaluates.
-
-### Construal gate — `construal_gate` (default `off`)
-
-Before a chartered session may touch the material, it writes its own reading of the charter —
-task frame, approach, assumptions, stop conditions, out of scope — to
-`audit/construals/<key>.md`, and a **different** party admits it.
-
-What the code does with `construal_gate=on`: the orchestrator returns `run-construal` when no
-construal exists for the charter's key (dispatching the role to write it and stop),
-`stop-construal` when one exists but is not admitted, and dispatches the real charter only
-once it is. `xcheck lint` refuses a construal whose `admitted-by` equals its `session` —
-self-admission — and one that claims `admitted` with no admitter at all. The admitter is
-named: `human:<label>` when you admit it yourself, or a session id when another session does.
-
-There is no pre-authorization: admission is always a separate act by a party that is not the
-producer, so a `proposed` construal always waits for a human (or another non-producing
-session). An earlier candidate — a `construal_envelope` pre-authorization declared inside
-`AUDIT.md` — was removed: because the courier commits `AUDIT.md` on any writing session's
-behalf, every attempt to make an in-tree pre-authorization independent left a route for a
-dispatched session to self-admit its own construal.
-
-With both flags `off`, the orchestrator's decision is byte-identical to what it was before
-these mechanisms existed — checked directly against the pre-integration decision path.
+With both flags `off`, the orchestrator's decision is byte-identical to what it was before these mechanisms existed. This is checked directly against the pre-integration decision path.
 
 ## 13. Configuration reference
 
-Defaults live in `XCHECK.md` §10. `AUDIT.md` §5 overrides them per project, and `xcheck migrate` reads that section **once** — from then on the limits live in `state.json` and a later edit to `AUDIT.md` changes nothing (it is no longer read as authority). Change a limit with the verb:
+Defaults live in `XCHECK.md` §10. `AUDIT.md` §5 overrides them per project, and `xcheck migrate` reads that section once; from then on the limits live in `state.json`, and a later edit to `AUDIT.md` changes nothing. Change a limit with the verb:
 
 ```
 xcheck set-limit reopen_limit 3
@@ -672,37 +598,39 @@ xcheck set-limit reopen_limit 3
 | `class_threshold` | 3 | 1–999 | census instances at which a class finding opens |
 | `reopen_limit` | 2 | 1–99 | consecutive reopens before `⚠ needs-human` |
 
-`set-limit` refuses a key no consumer reads, a value that is not a whole number, and a value outside the range — `reopen_limit 0` by name, because below 1 the mandatory human stop never fires. Until 0.9.0 this section pointed the operator at the state file itself and told them to re-render afterwards. That instruction walked around the lock, the atomic writer, `state_revision`, the event stream and immediate validation; the verb has all five. The same applies to the queue and the catalogs: `xcheck amend-pass`, `xcheck cancel-pass` and `xcheck update-catalog` are how those change. Nothing in this tool requires hand-editing machine state.
+`set-limit` refuses a key no consumer reads, a value that is not a whole number, and a value outside the range; it refuses `reopen_limit 0` by name, because below 1 the mandatory human stop never fires. The verb takes the lock, writes atomically, bumps `state_revision`, emits an event and validates at once. The queue and the catalogs change the same way, through `xcheck amend-pass`, `xcheck cancel-pass` and `xcheck update-catalog`. Nothing in this tool requires hand-editing machine state.
 
 ## 14. Language policy
 
-The methodology and templates are English. **Findings, plans, and reports are written in the operator's working language** — pick one per audit and stay consistent. **Evidence quotes are always verbatim in the material's own language**, regardless of the working language: the quote must remain findable by exact search.
+The methodology and templates are English. Findings, plans, and reports are written in the operator's working language. Pick one per audit and stay consistent. Evidence quotes are always verbatim in the material's own language, regardless of the working language: the quote must remain findable by exact search.
 
 ## 15. Troubleshooting & FAQ
 
 | Symptom | What it is | What to do |
 |---|---|---|
-| `⚠ needs-human` in the ledger | A finding was reopened twice — the auto-cycle isn't converging | Read the finding file (the full history is there); decide by hand: sharpen the requirement, split it, or close it by fiat |
+| `⚠ needs-human` in the ledger | A finding was reopened twice, so the auto-cycle isn't converging | Read the finding file (the full history is there); decide by hand: sharpen the requirement, split it, or close it by fiat |
 | `disputed` won't resolve | Auditor and Remediator disagree after the written round | You decide; agent ping-pong is forbidden by protocol |
 | Quotes "not found" en masse | The material shifted a lot (e.g. after a class fix) | Normal: validation marks such findings `obsolete` or refreshes locators. Do nothing |
-| Session exceeded its charter / no coverage report | Protocol violation | The pass does not count — rerun with a smaller charter; if it recurs, reduce the default pass size in AUDIT.md |
-| Ledger or a frontmatter block diverged from `state.json` | Somebody hand-edited a rendered view (§2) | Nothing repairs it on contact and nothing reads it back — the tool refuses the tree until it is resolved. `xcheck render-views` is the only repair: it overwrites each view from state and lists by name every one that had drifted, so read that list — those are the edits it destroyed — before re-recording the intent through a verb |
+| Session exceeded its charter / no coverage report | Protocol violation | The pass does not count. Rerun with a smaller charter; if it recurs, reduce the default pass size in AUDIT.md |
+| Ledger or a frontmatter block diverged from `state.json` | Somebody hand-edited a rendered view (§10) | Nothing repairs it on contact and nothing reads it back: the tool refuses the tree until it is resolved. `xcheck render-views` is the only repair: it overwrites each view from state and lists by name every one that had drifted, so read that list (those are the edits it destroyed) before re-recording the intent through a verb |
 | `no operator profile found` from `xcheck next` or a launcher; `policy: none found` in `xcheck status` | This machine has no operator profile, so nothing may dispatch (§5.3) | `./operator-profile.sh --trust trusted\|untrusted /path/to/operator.conf` from the xcheck repository, then the `export` line it prints |
-| Stale `audit/.lock` | A session died without releasing | `xcheck unlock` diagnoses it; `xcheck unlock --force` removes it (after confirming no writing session is active) |
+| Stale `audit/.lock` | A session died without releasing | `xcheck unlock` reclaims a lock whose heartbeat stopped more than `lease_ttl` seconds ago; `xcheck unlock --force` removes any lock, on your word that no writing session is active |
 
 **Can one agent do everything?** Mechanically yes (roles are functions), but you lose the main safeguard: cross-verification by fresh eyes. Minimum worth insisting on: the Verifier is a separate fresh session that never saw the fix.
 
-**Why can't triage be delegated to an agent?** It is the routine point where "what counts as a defect and what we spend cycles on" is decided — a value judgment of the material's owner. (The rarer exceptional gates, `XCHECK.md` §3, are the owner's judgment too — a norm-ratification ruling especially; triage is just the one that recurs every cycle.) The rest is execution.
+**Why can't triage be delegated to an agent?** It is the routine point where "what counts as a defect and what we spend cycles on" is decided, a value judgment that belongs to the material's owner. (The rarer exceptional gates in `XCHECK.md` §3 are the owner's judgment too, a norm ruling especially; triage is the one that recurs every cycle.)
 
-**How much human time does a cycle take?** Target mode: minutes to launch sessions plus one substantive triage sitting per batch of passes. If your per-cycle time grows, protocol is being violated somewhere — see the table above.
+**How much human time does a cycle take?** Target mode: minutes to launch sessions plus one substantive triage sitting per batch of passes. If your per-cycle time grows, protocol is being violated somewhere; see the table above.
 
-**Too many findings, triage is heavy.** Raise the severity bar in charters ("critical/major only"), narrow the dimensions in AUDIT.md, triage in batches by severity, or set `triage_batch_cap` so the orchestrator stops for triage in smaller portions.
+**Too many findings, triage is heavy.** Raise the severity bar in charters ("critical/major only"), narrow the dimensions in AUDIT.md, or triage in batches by severity. `triage_batch_cap` makes the orchestrator stop for triage in smaller portions.
 
 **An agent clearly broke protocol** (read "the whole project for context," left no coverage report). Don't count the session's result; rerun it. The protocol works only while violation = rerun, with no "just this once" exceptions.
 
+**Where do I go next?** The [guide](docs/guide/README.md). Read [usage patterns](docs/guide/usage-patterns.md) for your situation and [performance](docs/guide/performance.md) when an audit is slow or expensive. Read [when not to use it](docs/guide/when-not-to-use.md) before you start on something unusual, and [how it works](docs/guide/how-it-works.md) when something surprises you.
+
 ## 16. License
 
-MIT — see [LICENSE](LICENSE).
+MIT. See [LICENSE](LICENSE).
 
 ---
 

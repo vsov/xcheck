@@ -4,6 +4,8 @@ Install xcheck into a target project, then launch each role from there.
 `XCHECK.md` defines the methodology; this file only gets you from zero to a
 running cycle.
 
+Why the method works this way, and how to use it well: the [guide](docs/guide/README.md).
+
 ## 1. Install
 
 Run once, from the xcheck repo root, per audited project. The one command
@@ -150,6 +152,8 @@ range, or stop condition and is not a charter; it must not start a session.
 Instead of pasting one-liners by hand, install the thin launchers — `$xcheck-plan`, `$xcheck-audit`, `$xcheck-triage`, `$xcheck-remediate`, `$xcheck-verify`, `$xcheck-status` in Codex, or the corresponding `/xcheck-*` commands in Claude Code and OpenCode. See `launchers/README.md` (`launchers/install-launchers.sh`). They auto-pick the next charter and delegate the rules to `audit/XCHECK.md` — not pure delegation, though, and not zero-normative: for safety and ergonomics some of the methodology's rules are duplicated in the skills, so re-run the installer after *any* change to the methodology.
 
 ## 6. Field notes (pilot-tested)
+
+The guide's [usage patterns](docs/guide/usage-patterns.md) turn notes like these into recipes.
 
 - These notes come from `uncontained-direct` runs — sessions a human started in their own agent, with no xcheck sandbox profile, timeout, environment allowlist, log redaction, process-group kill or courier review of the diff. `xcheck next` (`orchestrated`) is the mode that enforces those; `SECURITY.md` scopes every control to one of the two.
 - Codex CLI sessions run in a sandbox that keeps `.git` read-only: Verifier sessions may be unable to commit their verdict updates. That is Codex's own containment, not xcheck's. The courier finishes those commits — check `git status` after each Codex session.

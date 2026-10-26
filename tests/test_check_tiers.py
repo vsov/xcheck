@@ -251,32 +251,29 @@ class TheRemoteCiPositionIsStatedHonestly(unittest.TestCase):
         for event, tier, scope, _why in tiers.EVENTS:
             print(f"          {event:<28} --tier={tier:<8} {scope}")
 
-    def test_the_workflow_exists_and_has_still_never_been_observed(self):
+    def test_the_workflow_exists_and_the_readme_names_its_observed_runs(self):
+        # Re-pointed 2026-10-25 (documentation rewrite). Until 0.9.8 this asserted the
+        # README said CI had never been observed, with "no git remote" as the evidence.
+        # 0.9.8 was observed green on the public mirror, so that sentence became false
+        # and the remote stopped being evidence of anything. What stays checkable from
+        # here is the same strength in the other direction: the workflow exists, the
+        # README names the observed runs by id, and the stale denial is gone.
+        from tests.test_ci_contract import OBSERVED_RUNS
         wf = REPO / ".github" / "workflows" / "ci.yml"
         self.assertTrue(wf.exists(), "the workflow file is gone")
-        remotes = subprocess.run(["git", "remote"], cwd=str(REPO),
-                                 capture_output=True, text=True).stdout.strip()
         readme = (REPO / "README.md").read_text(encoding="utf-8")
-        self.assertIn("never been observed running", readme)
-        print(f"\nREMOTE CI  workflow: {wf.relative_to(REPO)} exists; "
-              f"git remotes: {remotes or '(none)'}; "
-              f"README still says CI has never been observed running")
-        if remotes:
-            # 0.9.5 is the first release exported into a tree that HAS a remote, so this
-            # arm now fires there. "No remote" was never the claim — it was the EVIDENCE
-            # for it: nothing pushed, so nothing could have run. Where a remote exists
-            # that evidence is gone and nothing local replaces it, because whether a
-            # workflow ran is a fact about the forge. So the check says it cannot answer
-            # here, and the assertion below stays armed, unrelaxed, in the development
-            # repository where the evidence still holds.
-            self.skipTest(
-                f"this checkout has a git remote ({remotes}), so the absence of a "
-                f"workflow run cannot be established from here — that is a fact about "
-                f"the forge. In the development repository, which has no remote at all, "
-                f"the assertion this guards still runs.")
-        self.assertEqual("", remotes,
-                         "a remote appeared — the honesty claim above needs rewriting, "
-                         "not this assertion relaxing")
+        for run in OBSERVED_RUNS:
+            self.assertIn(run, readme, f"README does not name observed run {run}")
+        self.assertNotIn("never been observed running", readme,
+                         "README still says CI was never observed, which 0.9.8 made false")
+        # The release gate prints the same fact at run time, so it carries the same pin.
+        gate = GATE.read_text(encoding="utf-8")
+        for run in OBSERVED_RUNS:
+            self.assertTrue(run in gate, f"the release gate's CI note does not name observed run {run}")
+        self.assertNotIn("never been observed running", gate,
+                         "the release gate still says CI was never observed, which 0.9.8 made false")
+        print(f"\nREMOTE CI  workflow: {wf.relative_to(REPO)} exists; README names "
+              f"observed run(s) {', '.join(OBSERVED_RUNS)}")
 
 
 class TheEventTiersCoverEverything(unittest.TestCase):

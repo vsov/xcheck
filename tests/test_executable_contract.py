@@ -63,7 +63,8 @@ ROOT = REPO
 # the subject: every surface that reaches an agent or an operator
 # ---------------------------------------------------------------------------
 
-SURFACE_FILES = ("README.md", "XCHECK.md")
+SURFACE_FILES = ("README.md", "XCHECK.md") + tuple(
+    sorted(f"docs/guide/{p.name}" for p in (REPO / "docs" / "guide").glob("*.md")))  # the user guide
 
 
 def subject():
@@ -388,6 +389,8 @@ class APlantedInstructionIsCaught(unittest.TestCase):
         (tree / "xcheck").mkdir()
         shutil.copy2(ROOT / "xcheck" / "cli.py", tree / "xcheck" / "cli.py")
         for name in SURFACE_FILES:
+            # a surface may sit in a subdirectory (`docs/guide/`), which the copy needs
+            (tree / name).parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(ROOT / name, tree / name)
         target = tree / "skills" / "xcheck-remediate" / "SKILL.md"
         target.write_text(target.read_text(encoding="utf-8") + "\n" + line + "\n",

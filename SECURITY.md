@@ -290,6 +290,7 @@ Do not use xcheck, today, as an autonomous remediator on a production repository
 untrusted client code, as a multi-tenant service, as a required CI gate, or as
 evidence in a regulated or safety-critical process. The tool is honest about being a
 supervised instrument.
+[When not to use it](docs/guide/when-not-to-use.md) goes through these cases and what to use instead.
 
 ## Reporting a problem
 

@@ -487,7 +487,9 @@ class NoSurfaceStillCallsByteVolumeAUsefulAction(unittest.TestCase):
     """Criterion 1. The rename is only done when nothing still makes the old promise."""
 
     SURFACES = ("README.md", "SECURITY.md", "docs/operator.conf.example",
-                "xcheck/util.py", "xcheck/runner.py", "xcheck/policy.py")
+                "xcheck/util.py", "xcheck/runner.py", "xcheck/policy.py") + tuple(
+        f"docs/guide/{p.name}"
+        for p in sorted((Path(__file__).resolve().parent.parent / "docs" / "guide").glob("*.md")))
 
     def test_the_old_name_is_gone_from_every_vocabulary_that_accepts_settings(self):
         """The rename, asked structurally rather than by hunting a string: the old

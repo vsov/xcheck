@@ -522,17 +522,29 @@ class TheGateRunsUnderEverySupportedPython(unittest.TestCase):
                                   f"promises: {bad}")
 
 
-class TheReadmeStatesOnlyWhatWasObserved(unittest.TestCase):
-    """Criterion 6. This phase makes the workflow self-sufficient. It cannot make it
-    OBSERVED — that needs a remote, and the remote is the operator's act."""
+# The workflow runs that were observed green at 0.9.8 on the public mirror. Until then
+# this row said CI had "never been observed running", and that was true; at 0.9.8 the
+# weekly matrix passed, so the same sentence became false. The check moved with the fact
+# (2026-10-25, documentation rewrite): it now pins WHICH runs were observed, by id, and
+# refuses the old sentence, so neither an invented observation nor the stale denial can
+# come back without a test reddening.
+OBSERVED_RUNS = ("40188197283", "40188197103")
 
-    def test_the_compatibility_row_still_says_ci_has_never_been_observed(self):
+
+class TheReadmeStatesOnlyWhatWasObserved(unittest.TestCase):
+    """Criterion 6. The row may claim an observation only by naming the run that was
+    observed, and it may not keep a denial the observation made false."""
+
+    def test_the_compatibility_row_names_the_observed_runs(self):
         text = (REPO / "README.md").read_text(encoding="utf-8")
         row = next(ln for ln in text.splitlines() if ln.startswith("| Python |"))
         print(f"\n{row[:400]}")
-        self.assertIn("never been observed running", row,
-                      "the compatibility row stopped saying that CI has never been "
-                      "observed — nothing in 0.9.1 made it observed")
+        self.assertIn("observed green", row.lower(),
+                      "the compatibility row no longer says what CI was observed doing")
+        for run in OBSERVED_RUNS:
+            self.assertIn(run, row, f"the row does not name observed run {run}")
+        self.assertNotIn("never been observed running", row,
+                         "the row says CI was never observed, which 0.9.8 made false")
         for v in ("3.10", "3.11", "3.12"):
             self.assertIn(v, row)
 

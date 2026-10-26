@@ -15,6 +15,8 @@ Six launchers per platform, with Codex skill syntax and slash-command syntax els
 | `$xcheck-verify` | `/xcheck-verify` | Verifier | everything in status `fixed`; refuses to judge its own fixes |
 | `$xcheck-status` | `/xcheck-status` | — (read-only) | dashboard: queue progress, statuses, whose turn, termination check |
 
+Which launcher fits which situation: the guide's [usage patterns](../docs/guide/usage-patterns.md).
+
 ## Install
 
 ```sh

@@ -310,8 +310,45 @@ class TheDetectorReachesAConsumer(unittest.TestCase):
         the work this detector exists to save."""
         src = (REPO / "xcheck" / "cli.py").read_text(encoding="utf-8")
         gate = src[src.index('if kind == "stop-triage":'):]
-        self.assertIn("_class_lines()", gate[:600],
-                      "the triage gate does not reach the detector")
+        self.assertIn("_class_lines(project, state)", gate[:800],
+                      "the triage gate does not reach the detector for its own project")
+
+    def test_the_triage_gate_counts_the_gated_audit_not_the_cwd(self):
+        """`_class_lines()` with no arguments reads `./audit`. Run from a directory that
+        holds a DIFFERENT audit, the gate printed the triage count of one project and the
+        class counts of another (2 findings reported, `covering 13 of 133`).
+
+        The cwd is a decoy audit with a different finding count, so the two readings are
+        distinguishable; the counterfactual arm calls the old argument-less form from the
+        same cwd and asserts it reads the decoy — without it, a decoy nobody can see would
+        make the main assertion pass for any implementation."""
+        import os
+        import re
+        from tests.harness import xcheck_module
+        total = re.compile(r"(\d+) finding\(s\)")
+        # Every pass done, so the next decision is triage rather than another Auditor.
+        gated = Fixture(state_doc(findings=[finding_record("F-0001"),
+                                            finding_record("F-0002")],
+                                  queue=[queue_pass("P-01", done=True)]))
+        decoy = Fixture(state_doc(findings=[finding_record(f"F-{i:04d}")
+                                            for i in range(1, 6)]))
+        self.addCleanup(gated.cleanup)
+        self.addCleanup(decoy.cleanup)
+        here = os.getcwd()
+        os.chdir(decoy.root)
+        self.addCleanup(os.chdir, here)
+
+        code, out = gated.run("next")
+        self.assertIn("gate: triage needed — 2 findings in reported", out, out)
+        line = next(ln for ln in out.splitlines() if ln.startswith("recurring classes:"))
+        self.assertEqual("2", total.search(line).group(1),
+                         f"the gate described the cwd's audit, not --project: {line}")
+
+        old = xcheck_module()._class_lines()
+        self.assertEqual("5", total.search(old[0]).group(1),
+                         f"the counterfactual did not read the decoy cwd: {old}")
+        print(f"\n  GATED      `--project` gate prints: {line}"
+              f"\n  OLD CALL   `_class_lines()` from the cwd: {old[0]}")
 
     def test_the_proposal_form_reaches_the_bundle(self):
         """`proposals_for` had NO caller. The detector could describe a class and nothing

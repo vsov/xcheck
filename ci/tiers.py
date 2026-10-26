@@ -101,6 +101,9 @@ PR = (
     # that is `unmeasured` rather than 0. Cheap, and the kind of guard that
     # must not first fail on release day
     "test_benchmark_harness",
+    # the documentation rewrite: every key, flag, anchor and section a user-facing page
+    # names must exist. Half a second, and a doc edit is exactly what a PR carries
+    "test_guide_facts",
 )
 
 # Everything else. Named, not "the rest of the directory": a module that fell out of both
